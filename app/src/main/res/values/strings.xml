@@ -1,0 +1,20 @@
+<resources>
+    <string name="app_name">Video Mapping</string>
+    
+    <!-- Pantalla principal -->
+    <string name="start_tracking">Comenzar</string>
+    <string name="stop_tracking">Detener</string>
+    <string name="select_exercise">Seleccionar ejercicio</string>
+    <string name="tracking_started">Contando repeticiones…</string>
+    <string name="tracking_stopped">Presiona para comenzar</string>
+    
+    <!-- Ejercicios -->
+    <string name="push_ups">Flexiones</string>
+    <string name="sit_ups">Abdominales</string>
+    <string name="squats">Sentadillas</string>
+    <string name="jumping_jacks">Saltos de tijera</string>
+    
+    <!-- Mensajes de error -->
+    <string name="error_sensor_not_available">El sensor de movimiento no está disponible en este dispositivo</string>
+    <string name="error_permission_denied">Se requieren permisos de sensores para contar repeticiones</string>
+</resources>
