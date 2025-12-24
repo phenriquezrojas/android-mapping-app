@@ -10,29 +10,53 @@ import java.util.UUID
 data class MappingSurface(
     val id: String = UUID.randomUUID().toString(),
     val videoUri: Uri? = null,
-    // Puntos de las esquinas: [x1, y1, x2, y2, x3, y3, x4, y4]
-    // Orden: Superior-Izquierda, Superior-Derecha, Inferior-Derecha, Inferior-Izquierda
+    // Puntos del polígono principal
     val corners: FloatArray = floatArrayOf(
-        0.1f, 0.1f, // Top-Left
-        0.9f, 0.1f, // Top-Right
-        0.9f, 0.9f, // Bottom-Right
-        0.1f, 0.9f  // Bottom-Left
+        0.4f, 0.4f, // Superior-Izquierda
+        0.6f, 0.4f, // Superior-Derecha
+        0.6f, 0.6f, // Inferior-Derecha
+        0.4f, 0.6f  // Inferior-Izquierda
     ),
-    val name: String = "Surface ${id.take(4)}",
+    // Coordenadas de textura correspondientes (UV)
+    val texCoords: FloatArray = floatArrayOf(
+        0f, 0f,
+        1f, 0f,
+        1f, 1f,
+        0f, 1f
+    ),
+    // Polígonos de exclusión (huecos) dentro de esta superficie
+    val holes: List<FloatArray> = emptyList(),
+    val name: String = "Layer ${id.take(4)}",
     val isSelected: Boolean = false,
     val isLocked: Boolean = false
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is MappingSurface) return false
+        
         if (id != other.id) return false
+        if (videoUri != other.videoUri) return false
         if (!corners.contentEquals(other.corners)) return false
+        if (!texCoords.contentEquals(other.texCoords)) return false
+        
+        // Deep check for holes
+        if (holes.size != other.holes.size) return false
+        for (i in holes.indices) {
+            if (!holes[i].contentEquals(other.holes[i])) return false
+        }
+        
         return true
     }
 
     override fun hashCode(): Int {
         var result = id.hashCode()
+        result = 31 * result + (videoUri?.hashCode() ?: 0)
         result = 31 * result + corners.contentHashCode()
+        result = 31 * result + texCoords.contentHashCode()
+        // Deep hash for holes
+        holes.forEach { hole ->
+            result = 31 * result + hole.contentHashCode()
+        }
         return result
     }
 }

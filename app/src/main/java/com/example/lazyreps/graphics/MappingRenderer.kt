@@ -25,25 +25,15 @@ class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
     private var textures = IntArray(10) // Soporta hasta 10 superficies por ahora
     private val surfaceTextures = mutableMapOf<String, SurfaceTexture>()
     private val surfaces = mutableMapOf<String, Surface>()
+    private val pendingSurfaceCallbacks = mutableMapOf<String, MutableList<(Surface) -> Unit>>()
     private val surfacesLock = Any()
 
     @Volatile
     private var mappingSurfaces: List<MappingSurface> = emptyList()
 
-    private val vertexBuffer: FloatBuffer = ByteBuffer.allocateDirect(8 * 4).run {
-        order(ByteOrder.nativeOrder())
-        asFloatBuffer()
-    }
-
-    private val textureBuffer: FloatBuffer = ByteBuffer.allocateDirect(8 * 4).run {
-        order(ByteOrder.nativeOrder())
-        asFloatBuffer().apply {
-            put(floatArrayOf(
-                0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f
-            ))
-            position(0)
-        }
-    }
+    // Buffers dinámicos (se ajustan en cada dibujo si es necesario)
+    private var vertexBuffer: FloatBuffer? = null
+    private var textureBuffer: FloatBuffer? = null
 
     fun updateSurfaces(newSurfaces: List<MappingSurface>) {
         mappingSurfaces = newSurfaces
@@ -51,12 +41,38 @@ class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
 
     fun getSurfaceForId(id: String, onSurfaceCreated: (Surface) -> Unit) {
         synchronized(surfacesLock) {
-            surfaces[id]?.let { onSurfaceCreated(it) }
+            val s = surfaces[id]
+            if (s != null) {
+                onSurfaceCreated(s)
+            } else {
+                pendingSurfaceCallbacks.getOrPut(id) { mutableListOf() }.add(onSurfaceCreated)
+            }
+        }
+    }
+
+    fun clearSurfaces() {
+        synchronized(surfacesLock) {
+            surfaceTextures.values.forEach { it.release() }
+            surfaceTextures.clear()
+            surfaces.clear()
+            pendingSurfaceCallbacks.clear()
+        }
+    }
+
+    fun triggerCallbacksForExistingSurfaces() {
+        synchronized(surfacesLock) {
+            // Ejecutar callbacks para superficies que ya existen
+            surfaces.forEach { (id, surface) ->
+                pendingSurfaceCallbacks.remove(id)?.forEach { callback ->
+                    callback(surface)
+                }
+            }
         }
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClearStencil(0)
         
         val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, readShader(R.raw.mapping_vertex_shader))
         val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, readShader(R.raw.mapping_fragment_shader))
@@ -98,8 +114,12 @@ class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
         val st = synchronized(surfacesLock) {
             if (!surfaceTextures.containsKey(surface.id)) {
                 val tex = SurfaceTexture(texId)
+                val s = Surface(tex)
                 surfaceTextures[surface.id] = tex
-                surfaces[surface.id] = Surface(tex)
+                surfaces[surface.id] = s
+                
+                // Ejecutar callbacks pendientes
+                pendingSurfaceCallbacks.remove(surface.id)?.forEach { it(s) }
             }
             surfaceTextures[surface.id]!!
         }
@@ -107,32 +127,56 @@ class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
         try {
             st.updateTexImage()
         } catch (e: Exception) {
-            return // Evitar crash si el video se cierra
+            return
         }
 
-        // Configurar vértices basados en corners (convertir 0..1 a -1..1 de OpenGL)
-        val vertices = floatArrayOf(
-            surface.corners[0] * 2 - 1f, -(surface.corners[1] * 2 - 1f),
-            surface.corners[2] * 2 - 1f, -(surface.corners[3] * 2 - 1f),
-            surface.corners[4] * 2 - 1f, -(surface.corners[5] * 2 - 1f),
-            surface.corners[6] * 2 - 1f, -(surface.corners[7] * 2 - 1f)
-        )
-        vertexBuffer.put(vertices).position(0)
+        // Renderizado simple del polígono con textura
+        val vertexCount = surface.corners.size / 2
+        val vertices = FloatArray(surface.corners.size)
+        for (i in 0 until vertexCount) {
+            vertices[i * 2] = surface.corners[i * 2] * 2 - 1f
+            vertices[i * 2 + 1] = -(surface.corners[i * 2 + 1] * 2 - 1f)
+        }
+
+        val vBuf = ByteBuffer.allocateDirect(vertices.size * 4).run {
+            order(ByteOrder.nativeOrder())
+            asFloatBuffer().apply { put(vertices).position(0) }
+        }
+        val tBuf = ByteBuffer.allocateDirect(surface.texCoords.size * 4).run {
+            order(ByteOrder.nativeOrder())
+            asFloatBuffer().apply { put(surface.texCoords).position(0) }
+        }
 
         GLES20.glEnableVertexAttribArray(positionHandle)
-        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vertexBuffer)
-
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
         GLES20.glEnableVertexAttribArray(texCoordHandle)
-        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, textureBuffer)
+        GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, tBuf)
 
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glUniform1i(textureHandle, 0)
 
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
 
         GLES20.glDisableVertexAttribArray(positionHandle)
         GLES20.glDisableVertexAttribArray(texCoordHandle)
+    }
+
+    private fun renderSimplePolygon(corners: FloatArray) {
+        val vertexCount = corners.size / 2
+        val vertices = FloatArray(corners.size)
+        for (i in 0 until vertexCount) {
+            vertices[i * 2] = corners[i * 2] * 2 - 1f
+            vertices[i * 2 + 1] = -(corners[i * 2 + 1] * 2 - 1f)
+        }
+        val vBuf = ByteBuffer.allocateDirect(vertices.size * 4).run {
+            order(ByteOrder.nativeOrder())
+            asFloatBuffer().apply { put(vertices).position(0) }
+        }
+        GLES20.glEnableVertexAttribArray(positionHandle)
+        GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
+        GLES20.glDisableVertexAttribArray(positionHandle)
     }
 
     private fun loadShader(type: Int, shaderCode: String): Int {
