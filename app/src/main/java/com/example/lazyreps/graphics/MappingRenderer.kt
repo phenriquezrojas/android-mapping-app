@@ -15,7 +15,11 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
+class MappingRenderer(
+    private val context: Context
+) : GLSurfaceView.Renderer {
+
+    var onFrameAvailable: (() -> Unit)? = null
 
     private var program = 0
     private var positionHandle = 0
@@ -109,11 +113,17 @@ class MappingRenderer(private val context: Context) : GLSurfaceView.Renderer {
     }
 
     private fun drawSurface(surface: MappingSurface, index: Int) {
+        if (surface.videoUri == null) return
+
         val texId = textures[index]
         
         val st = synchronized(surfacesLock) {
             if (!surfaceTextures.containsKey(surface.id)) {
                 val tex = SurfaceTexture(texId)
+                tex.setDefaultBufferSize(1280, 720) // Evitar 0x0 inicial
+                tex.setOnFrameAvailableListener {
+                    onFrameAvailable?.invoke()
+                }
                 val s = Surface(tex)
                 surfaceTextures[surface.id] = tex
                 surfaces[surface.id] = s

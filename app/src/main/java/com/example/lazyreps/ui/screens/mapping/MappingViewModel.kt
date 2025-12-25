@@ -40,7 +40,9 @@ data class MappingUiState(
     val surfaces: List<MappingSurface> = emptyList(),
     val isProjectionMode: Boolean = false,
     val selectedSurfaceId: String? = null,
-    val projects: List<MappingProject> = emptyList()
+    val projects: List<MappingProject> = emptyList(),
+    val errorMessage: String? = null,
+    val isPlaying: Boolean = false
 )
 
 @HiltViewModel
@@ -69,14 +71,22 @@ class MappingViewModel @Inject constructor(
         _uiState.update { it.copy(selectedSurfaceId = id) }
     }
 
+    fun dismissError() {
+        _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun reportError(message: String) {
+        _uiState.update { it.copy(errorMessage = message) }
+        Log.e("MappingViewModel", "Reported error: $message")
+    }
+
     fun addSurface(shape: MappingShape = MappingShape.SQUARE, width: Float, height: Float) {
         val corners: FloatArray
         val texCoords: FloatArray
         val aspect = width / height
         
         // Queremos que las figuras ocupen aprox el 20% del ancho
-        val sizeX = 0.2f
-        val sizeY = sizeX * aspect
+
         
         when (shape) {
             MappingShape.SQUARE -> {
@@ -226,73 +236,110 @@ class MappingViewModel @Inject constructor(
 
     @OptIn(UnstableApi::class)
     fun setVideoForSurface(id: String, uri: Uri) {
-        // Tomar permisos persistentes sobre el URI para que funcione después de reiniciar la app
         try {
-            context.contentResolver.takePersistableUriPermission(
-                uri,
-                android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-            )
-        } catch (e: Exception) {
-            Log.w("MappingViewModel", "Could not take persistable permission for $uri", e)
-        }
-        
-        _uiState.update { state ->
-            val updatedSurfaces = state.surfaces.map {
-                if (it.id == id) it.copy(videoUri = uri) else it
+            // Intentar resolver la ruta local real para evitar SecurityException con ContentProviders privados
+            val resolvedUri = resolveLocalPath(uri) ?: uri
+            Log.d("MappingViewModel", "setVideoForSurface: Input URI=$uri, Resolved URI=$resolvedUri")
+
+            // Persiste permisos solo si sigue siendo content:// (aunque idealmente usamos file:// ahora)
+            if (android.content.ContentResolver.SCHEME_CONTENT == resolvedUri.scheme) {
+                try {
+                    context.contentResolver.takePersistableUriPermission(
+                        resolvedUri,
+                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
+                    )
+                } catch (t: Throwable) {
+                    Log.e("MappingViewModel", "Could not take persistable permission for $resolvedUri: ${t.message}")
+                }
             }
-            state.copy(surfaces = updatedSurfaces)
+            
+            _uiState.update { state ->
+                val updatedSurfaces = state.surfaces.map {
+                    if (it.id == id) it.copy(videoUri = resolvedUri) else it
+                }
+                state.copy(surfaces = updatedSurfaces)
+            }
+            // CRITICAL: Notify renderer that we now have a video URI, 
+            // so onDrawFrame will create the Surface and trigger setupPlayer's callback.
+            renderer.updateSurfaces(_uiState.value.surfaces)
+            
+            setupPlayer(id, resolvedUri)
+            saveCurrentState()
+        } catch (t: Throwable) {
+            val msg = "Error setting video: ${t.message}"
+            Log.e("MappingViewModel", msg, t)
+            _uiState.update { it.copy(errorMessage = msg) }
         }
-        setupPlayer(id, uri)
-        saveCurrentState()
     }
 
-    @OptIn(UnstableApi::class)
-    private fun setupPlayer(id: String, uri: Uri) {
-        Log.d("MappingViewModel", "setupPlayer called for id=$id, uri=$uri")
-        // Liberar player existente si lo hay
-        players[id]?.release()
-        
-        // Crear nuevo reproductor
-        val player = ExoPlayer.Builder(context).build().apply {
-            repeatMode = Player.REPEAT_MODE_ALL
-            playWhenReady = true
-            
-            // Añadir listener para forzar reproducción cuando esté listo
-            addListener(object : Player.Listener {
-                override fun onPlaybackStateChanged(playbackState: Int) {
-                    Log.d("MappingViewModel", "Player $id state changed to $playbackState")
-                    if (playbackState == Player.STATE_READY) {
-                        play()
+    private fun resolveLocalPath(uri: Uri): Uri? {
+        if (android.content.ContentResolver.SCHEME_FILE == uri.scheme) return uri
+        if (android.content.ContentResolver.SCHEME_CONTENT != uri.scheme) return null
+
+        return try {
+            val projection = arrayOf(android.provider.MediaStore.MediaColumns.DATA)
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val columnIndex = cursor.getColumnIndex(android.provider.MediaStore.MediaColumns.DATA)
+                    if (columnIndex != -1) {
+                        val path = cursor.getString(columnIndex)
+                        if (!path.isNullOrEmpty()) {
+                            return Uri.fromFile(java.io.File(path))
+                        }
                     }
                 }
-            })
+            }
+            null
+        } catch (e: Exception) {
+            Log.e("MappingViewModel", "Error resolving local path for $uri", e)
+            null
         }
-        players[id] = player
-        
-        // Adjuntar al Surface de OpenGL y preparar video después
-        renderer.getSurfaceForId(id) { surface ->
-            Log.d("MappingViewModel", "Surface callback executed for id=$id")
-            player.setVideoSurface(surface)
-            player.setMediaItem(MediaItem.fromUri(uri))
-            player.prepare()
+    }
+
+    fun togglePlayPause() {
+        if (_uiState.value.isPlaying) {
+            pauseAllVideos()
+        } else {
+            resumeAllVideos()
         }
+    }
+
+    private fun pauseAllVideos() {
+        players.values.forEach { it.pause() }
+        _uiState.update { it.copy(isPlaying = false) }
+    }
+
+    private fun resumeAllVideos() {
+        // Si no hay players (e.g. se limpió), quizás deberíamos intentar recargar, 
+        // pero por ahora asumimos que es solo resume.
+        players.values.forEach { it.play() }
+        _uiState.update { it.copy(isPlaying = true) }
     }
 
     fun playAllVideos() {
         Log.d("MappingViewModel", "playAllVideos called")
         viewModelScope.launch {
+            _uiState.update { it.copy(isPlaying = true) }
+            
             // Delay inicial para dar tiempo al renderer
             kotlinx.coroutines.delay(500)
             
             Log.d("MappingViewModel", "Setting up videos for ${_uiState.value.surfaces.size} surfaces")
             
-            // Configurar cada video directamente
+            // Configurar cada video escalonadamente (staggered)
             _uiState.value.surfaces.forEach { surface ->
-                Log.d("MappingViewModel", "Surface ${surface.id}: videoUri = ${surface.videoUri}")
                 surface.videoUri?.let { uri ->
-                    // Siempre recrear el player para asegurar configuración limpia
-                    players[surface.id]?.release()
-                    setupPlayer(surface.id, uri)
+                    Log.d("MappingViewModel", "Surface ${surface.id}: setting up player (staggered)")
+                    try {
+                        // Siempre recrear el player para asegurar configuración limpia
+                        players[surface.id]?.release()
+                        setupPlayer(surface.id, uri)
+                    } catch (t: Throwable) {
+                         Log.e("MappingViewModel", "Error in staggered load for ${surface.id}", t)
+                         _uiState.update { it.copy(errorMessage = "Error loading video: ${t.message}") }
+                    }
+                    // Esperar 300ms entre cargas para no saturar el decodificador
+                    kotlinx.coroutines.delay(300)
                 }
             }
             
@@ -300,6 +347,77 @@ class MappingViewModel @Inject constructor(
             kotlinx.coroutines.delay(100)
             Log.d("MappingViewModel", "Triggering callbacks for existing surfaces")
             renderer.triggerCallbacksForExistingSurfaces()
+            
+            // ADICIONAL: Forzar actualización del renderer para asegurar visibilidad
+            // Esto soluciona el "glitch" donde el video no se ve hasta redimensionar
+            renderer.updateSurfaces(_uiState.value.surfaces)
+        }
+    }
+    
+    // ... setupPlayer ...
+    
+    @OptIn(UnstableApi::class)
+    private fun setupPlayer(id: String, uri: Uri) {
+        Log.d("MappingViewModel", "setupPlayer called for id=$id, uri=$uri")
+        try {
+            players[id]?.release()
+            
+            val player = ExoPlayer.Builder(context).build().apply {
+                repeatMode = Player.REPEAT_MODE_ALL
+                playWhenReady = true
+                
+                addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            // Video listo. Actualizamos surfaces para quitar pantalla negra.
+                            renderer.updateSurfaces(_uiState.value.surfaces)
+                        }
+                    }
+                    
+                    override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+                        val cause = error.cause
+                        val details = when {
+                            cause is androidx.media3.datasource.FileDataSource.FileDataSourceException -> "File Access Error: ${cause.message}"
+                            cause is java.io.FileNotFoundException -> "File Not Found. Check Permissions. ${cause.message}"
+                            else -> "${error.errorCodeName} - ${cause?.message}"
+                        }
+                        val msg = "Video Error: $details"
+                        Log.e("MappingViewModel", msg, error)
+                        _uiState.update { it.copy(errorMessage = msg) }
+                    }
+                })
+            }
+            players[id] = player
+            
+            renderer.getSurfaceForId(id) { surface ->
+                // CRITICAL FIX: Ensure this runs on Main Thread.
+                // The renderer calls this from GLThread when creating new surfaces (no auto-play),
+                // but from MainThread when reusing existing surfaces (auto-play works).
+                // ExoPlayer requires MainThread (or its Looper) for reliable command execution.
+                android.os.Handler(android.os.Looper.getMainLooper()).post {
+                    try {
+                        player.addListener(object : Player.Listener {
+                            override fun onPlaybackStateChanged(state: Int) {
+                                if (state == Player.STATE_READY) {
+                                    // "Kick" tardío para asegurar que se pinte el primer frame
+                                    renderer.updateSurfaces(_uiState.value.surfaces)
+                                }
+                            }
+                        })
+                        player.setVideoSurface(surface)
+                        player.setMediaItem(MediaItem.fromUri(uri))
+                        player.prepare()
+                        player.play() 
+                        renderer.updateSurfaces(_uiState.value.surfaces)
+                    } catch (t: Throwable) {
+                        Log.e("MappingViewModel", "Error inside surface callback: ${t.message}")
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            val msg = "Critical setupPlayer error: ${t.message}"
+            Log.e("MappingViewModel", msg, t)
+            _uiState.update { it.copy(errorMessage = msg) }
         }
     }
 
@@ -326,7 +444,7 @@ class MappingViewModel @Inject constructor(
         saveProjects()
     }
 
-    fun loadProject(projectId: String) {
+    fun loadProject(projectId: String, loadVideos: Boolean) {
         val project = _uiState.value.projects.find { it.id == projectId } ?: return
         
         // Limpiar players actuales
@@ -335,10 +453,18 @@ class MappingViewModel @Inject constructor(
         
         // NO limpiar superficies del renderer - dejar que se reutilicen
         
-        _uiState.update { it.copy(surfaces = project.surfaces, selectedSurfaceId = null) }
-        renderer.updateSurfaces(project.surfaces)
+        val surfacesToLoad = if (loadVideos) {
+            project.surfaces
+        } else {
+            project.surfaces.map { it.copy(videoUri = null) }
+        }
+
+        _uiState.update { it.copy(surfaces = surfacesToLoad, selectedSurfaceId = null) }
+        renderer.updateSurfaces(surfacesToLoad)
         
-        // NO llamar saveCurrentState() aquí - sobrescribiría el proyecto antes de que los videos se configuren
+        if (loadVideos) {
+            playAllVideos()
+        }
     }
 
     fun addPointToSide(surfaceId: String, sideIndex: Int) {

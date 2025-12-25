@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material3.*
@@ -42,7 +43,11 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalComposeUiApi::class)
+import com.google.accompanist.permissions.ExperimentalPermissionsApi
+import com.google.accompanist.permissions.isGranted
+import com.google.accompanist.permissions.rememberPermissionState
+
+@OptIn(ExperimentalComposeUiApi::class, ExperimentalPermissionsApi::class)
 @Composable
 fun MappingScreen(
     viewModel: MappingViewModel = androidx.hilt.navigation.compose.hiltViewModel()
@@ -51,19 +56,31 @@ fun MappingScreen(
     val context = LocalContext.current
     val renderer = remember { MappingRenderer(context) }
     
-    val pickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument(),
-        onResult = { uri ->
-            uri?.let {
-                uiState.selectedSurfaceId?.let { id ->
-                    viewModel.setVideoForSurface(id, it)
-                }
-            }
-        }
+    val permissionState = com.google.accompanist.permissions.rememberPermissionState(
+        android.Manifest.permission.READ_EXTERNAL_STORAGE
     )
+
+
+
+    var showSaveDialog by remember { mutableStateOf(false) }
+    var saveProjectName by remember { mutableStateOf("") }
+
+    var showFilePicker by remember { mutableStateOf(false) }
+
+    // Función segura para lanzar video picker (Internal)
+    val openVideoPicker = {
+        if (permissionState.status.isGranted) {
+             showFilePicker = true
+        } else {
+             permissionState.launchPermissionRequest()
+        }
+    }
 
     val view = LocalView.current
     val window = (context as? android.app.Activity)?.window
+
+
+
 
     LaunchedEffect(uiState.isProjectionMode) {
         window?.let { win ->
@@ -83,21 +100,39 @@ fun MappingScreen(
 
     var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
-    var showSaveDialog by remember { mutableStateOf(false) }
     var showProjectsDialog by remember { mutableStateOf(false) }
     var projectName by remember { mutableStateOf("") }
+    var pendingLoadProjectId by remember { mutableStateOf<String?>(null) }
 
+    // Toggle para modo Nebula (Click-Move-Click)
+    var isNebulaMode by remember { mutableStateOf(false) }
+    
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+
+        // ... Dialogs ... (omitted from replace chunk for brevity if they are above)
+        // Note: The previous tools have large context. I will target the variable block.
+
+        if (uiState.errorMessage != null) {
+            AlertDialog(
+                onDismissRequest = { viewModel.dismissError() },
+                title = { Text("Error") },
+                text = { Text(uiState.errorMessage ?: "Unknown error") },
+                confirmButton = {
+                    TextButton(onClick = { viewModel.dismissError() }) { Text("OK") }
+                }
+            )
+        }
         // Motor de renderizado (OpenGL)
-        // ... (AndroidView unchanged)
         AndroidView(
             factory = { ctx ->
                 GLSurfaceView(ctx).apply {
                     setEGLContextClientVersion(2)
-                    // Solicitar configuración con 8 bits de stencil
                     setEGLConfigChooser(8, 8, 8, 8, 16, 8)
                     setRenderer(renderer)
                     renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
+                    renderer.onFrameAvailable = {
+                        requestRender()
+                    }
                 }
             },
             modifier = Modifier.fillMaxSize()
@@ -129,7 +164,8 @@ fun MappingScreen(
                     onScaleSurface = { factor ->
                         viewModel.scaleSurface(surface.id, factor)
                     },
-                    onDeleteSurface = { showDeleteConfirm = surface.id }
+                    onDeleteSurface = { showDeleteConfirm = surface.id },
+                    isNebulaMode = isNebulaMode
                 )
             }
 
@@ -142,13 +178,15 @@ fun MappingScreen(
                     selectedSurfaceId = uiState.selectedSurfaceId,
                     onAddSurface = { shape -> viewModel.addSurface(shape, screenW, screenH) },
                     onToggleProjection = { viewModel.toggleProjectionMode() },
-                    onPickVideo = { pickerLauncher.launch(arrayOf("video/*")) },
+                    onPickVideo = { openVideoPicker() },
                     onClearAll = { showClearConfirm = true },
                     onOpenProjects = { showProjectsDialog = true },
                     onSaveProject = { showSaveDialog = true },
-                    onDeleteSurface = { showDeleteConfirm = uiState.selectedSurfaceId },
-                    onPlayVideos = { viewModel.playAllVideos() },
-                    hasSurfaces = uiState.surfaces.isNotEmpty()
+                    onPlayVideos = { viewModel.togglePlayPause() },
+                    hasSurfaces = uiState.surfaces.isNotEmpty(),
+                    isPlaying = uiState.isPlaying,
+                    isNebulaMode = isNebulaMode,
+                    onToggleNebulaMode = { isNebulaMode = !isNebulaMode }
                 )
             }
         }
@@ -246,7 +284,9 @@ fun MappingScreen(
                                     }
                                 },
                                 modifier = Modifier.clickable {
-                                    viewModel.loadProject(project.id)
+                                    pendingLoadProjectId = project.id
+                                    // Trigger load
+                                    viewModel.loadProject(project.id, loadVideos = true)
                                     showProjectsDialog = false
                                 }
                             )
@@ -258,6 +298,24 @@ fun MappingScreen(
                 }
             )
         }
+
+        if (showFilePicker) {
+            com.example.lazyreps.ui.components.FilePicker(
+                onFileSelected = { file ->
+                    showFilePicker = false
+                    try {
+                        val uri = android.net.Uri.fromFile(file)
+                        uiState.selectedSurfaceId?.let { id ->
+                            viewModel.setVideoForSurface(id, uri)
+                        }
+                    } catch (e: Exception) {
+                        viewModel.reportError("File selection error: ${e.message}")
+                    }
+                },
+                onDismissRequest = { showFilePicker = false }
+            )
+        }
+
     }
 }
 
@@ -270,9 +328,11 @@ fun MappingControls(
     onClearAll: () -> Unit,
     onOpenProjects: () -> Unit,
     onSaveProject: () -> Unit,
-    onDeleteSurface: () -> Unit,
     onPlayVideos: () -> Unit,
-    hasSurfaces: Boolean
+    hasSurfaces: Boolean,
+    isPlaying: Boolean,
+    isNebulaMode: Boolean,
+    onToggleNebulaMode: () -> Unit
 ) {
     var showAddMenu by remember { mutableStateOf(false) }
 
@@ -306,7 +366,7 @@ fun MappingControls(
                                 }
                             ) {
                                 ShapeIcon(shape)
-                                Text(shape.name.lowercase().capitalize(), style = MaterialTheme.typography.labelSmall)
+                                Text(shape.name.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }, style = MaterialTheme.typography.labelSmall)
                             }
                         }
                     }
@@ -320,6 +380,13 @@ fun MappingControls(
                 FloatingActionButton(onClick = onClearAll, containerColor = Color.DarkGray) {
                     Icon(Icons.Default.Refresh, contentDescription = "Clear All", tint = Color.White)
                 }
+                 // Botón Modo Nebula (Gamepad)
+                FloatingActionButton(
+                    onClick = onToggleNebulaMode,
+                    containerColor = if (isNebulaMode) Color.Green else Color.DarkGray
+                ) {
+                    Icon(Icons.Default.Settings, contentDescription = "Nebula Mode", tint = if (isNebulaMode) Color.Black else Color.White)
+                }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FloatingActionButton(onClick = onSaveProject, containerColor = Color.DarkGray) {
@@ -331,7 +398,9 @@ fun MappingControls(
             }
             if (hasSurfaces) {
                 FloatingActionButton(onClick = onPlayVideos, containerColor = Color(0xFF4CAF50)) {
-                    Icon(Icons.Default.PlayArrow, contentDescription = "Play Videos", tint = Color.White)
+                    // Usar un icono de Pause si está reproduciendo, o Play si no.
+                    val icon = if (isPlaying) androidx.compose.material.icons.Icons.Filled.Pause else Icons.Default.PlayArrow
+                    Icon(icon, contentDescription = "Play/Pause Videos", tint = Color.White)
                 }
             }
             FloatingActionButton(onClick = onToggleProjection, containerColor = MaterialTheme.colorScheme.primary) {
@@ -340,8 +409,8 @@ fun MappingControls(
         }
         
         Text(
-            "Video Mapping Editor",
-            color = Color.White,
+            if (isNebulaMode) "REMOTE MODE" else "Video Mapping Editor",
+            color = if (isNebulaMode) Color.Green else Color.White,
             style = MaterialTheme.typography.headlineSmall,
             modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
         )
@@ -378,21 +447,78 @@ fun SurfaceHandles(
     onAddPointToSide: (Int) -> Unit,
     onMoveSurface: (Float, Float) -> Unit,
     onScaleSurface: (Float) -> Unit,
-    onDeleteSurface: () -> Unit
+    onDeleteSurface: () -> Unit,
+    isNebulaMode: Boolean // Nueva flag para modo "Control Remoto"
 ) {
     val corners = surface.corners
     val isSelected = surface.id == selectedSurfaceId
     
+    // Estado para "Agarrar" handles en modo Nebula
+    // Guardamos qué handle tenemos agarrado: Index del corner, o -1 para mover, -2 para escalar
+    var grabbedHandleType by remember { mutableStateOf<Int?>(null) } 
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val width = constraints.maxWidth.toFloat()
         val height = constraints.maxHeight.toFloat()
+        
+        // Si estamos en modo Nebula y tenemos algo agarrado, interceptamos TODOS los eventos de puntero
+        // para mover lo que tenemos agarrado a donde apunte el cursor.
+        if (isNebulaMode && grabbedHandleType != null) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .pointerInput(grabbedHandleType) {
+                        awaitPointerEventScope {
+                            // Capturamos la posición inicial para calcular deltas relativos
+                            var lastPosition: androidx.compose.ui.geometry.Offset? = null
 
-        // Detectar selección solo si se pulsa cerca de la superficie
-        // Para simplificar y no bloquear, solo permitimos selección si es la superficie seleccionada
-        // o si no hay ninguna seleccionada. Pero para no bloquear botones,
-        // este Box debe ser consciente de su z-order.
-        // Detectar selección: solo si pulsamos "dentro" del polígono (aproximación rápida)
-        // O mejor: usar un Box más pequeño o simplemente no bloquear handles de otros.
+                            while (true) {
+                                val event = awaitPointerEvent()
+                                val currentPosition = event.changes.first().position
+                                
+                                if (lastPosition == null) {
+                                    lastPosition = currentPosition
+                                }
+
+                                // Si es un MOVE (hover o drag), calculamos delta y aplicamos
+                                val dxRaw = currentPosition.x - lastPosition!!.x
+                                val dyRaw = currentPosition.y - lastPosition!!.y
+                                lastPosition = currentPosition
+                                
+                                if (dxRaw != 0f || dyRaw != 0f) {
+                                  when (grabbedHandleType) {
+                                      -1 -> { // Move Whole Surface
+                                          // Delta relativo puro
+                                          onMoveSurface(dxRaw / width, dyRaw / height)
+                                      }
+                                      -2 -> { // Scale
+                                           // Escala basado en distancia X recorrida
+                                           val factor = 1f + (dxRaw / width) * 2f
+                                           onScaleSurface(factor)
+                                      }
+                                      else -> { // Corner Index
+                                          val idx = grabbedHandleType!!
+                                          if (idx >= 0) {
+                                              val newCorners = corners.copyOf()
+                                              newCorners[idx * 2] = (newCorners[idx * 2] + dxRaw / width).coerceIn(0f, 1f)
+                                              newCorners[idx * 2 + 1] = (newCorners[idx * 2 + 1] + dyRaw / height).coerceIn(0f, 1f)
+                                              onPointsUpdated(newCorners)
+                                          }
+                                      }
+                                  }
+                                }
+
+                                // Si hacen CLICK (Press), soltamos (DROP)
+                                if (event.type == androidx.compose.ui.input.pointer.PointerEventType.Press) {
+                                    grabbedHandleType = null
+                                    lastPosition = null
+                                }
+                            }
+                        }
+                    }
+            )
+        }
+
         if (surface.id != selectedSurfaceId) {
              Canvas(
                 modifier = Modifier
@@ -400,16 +526,17 @@ fun SurfaceHandles(
                     .pointerInput(surface.id) {
                         detectTapGestures(onTap = { onSelect() })
                     }
-            ) {
-                // No dibujamos nada aquí, solo es para capturar taps en el área de la superficie si quisiéramos ser precisos.
-                // Por ahora, dejamos que sea full screen pero solo si no hay handles encima.
-            }
+            ) { }
         }
+
+        // Color especial si estamos "Agarrando" algo
+        val grabbingColor = Color.Green
 
         // Manejadores de Vértices
         for (i in 0 until corners.size / 2) {
             val px = corners[i * 2]
             val py = corners[i * 2 + 1]
+            val isGrabbed = (grabbedHandleType == i)
             
             CornerHandle(
                 x = px,
@@ -417,16 +544,26 @@ fun SurfaceHandles(
                 screenWidth = width,
                 screenHeight = height,
                 isSelected = isSelected,
+                color = if (isGrabbed) grabbingColor else Color.Cyan,
                 onDrag = { dx, dy ->
-                    val newCorners = corners.copyOf()
-                    newCorners[i * 2] = (newCorners[i * 2] + dx / width).coerceIn(0f, 1f)
-                    newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + dy / height).coerceIn(0f, 1f)
-                    onPointsUpdated(newCorners)
+                    // Drag normal (Touch)
+                    if (!isNebulaMode) {
+                        val newCorners = corners.copyOf()
+                        newCorners[i * 2] = (newCorners[i * 2] + dx / width).coerceIn(0f, 1f)
+                        newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + dy / height).coerceIn(0f, 1f)
+                        onPointsUpdated(newCorners)
+                    }
+                },
+                onClick = {
+                    // Click para agarrar/soltar en modo Nebula
+                    if (isNebulaMode && isSelected) {
+                        grabbedHandleType = if (grabbedHandleType == i) null else i
+                    }
                 }
             )
         }
 
-        // Manejador Central de Movimiento (Drag del polígono completo)
+        // Manejador Central de Movimiento
         if (isSelected) {
             var centerX = 0f
             var centerY = 0f
@@ -438,25 +575,36 @@ fun SurfaceHandles(
             centerX /= n
             centerY /= n
 
+            val isGrabbedMove = (grabbedHandleType == -1)
+
             MoveHandle(
                 x = centerX,
                 y = centerY,
                 screenWidth = width,
                 screenHeight = height,
-                onDrag = onMoveSurface
+                color = if (isGrabbedMove) grabbingColor else Color.White.copy(alpha = 0.5f),
+                onDrag = { dx, dy ->
+                     if (!isNebulaMode) onMoveSurface(dx, dy)
+                },
+                onClick = {
+                    if (isNebulaMode) {
+                         grabbedHandleType = if (grabbedHandleType == -1) null else -1
+                    }
+                }
             )
 
-            // Manejador de Escalado (Debajo del centro para evitar superposición)
             ScaleHandle(
                 x = centerX, 
                 y = centerY + 0.08f,
                 screenWidth = width,
                 screenHeight = height,
-                onScale = onScaleSurface
+                onScale = { f -> if (!isNebulaMode) onScaleSurface(f) }
             )
+            // Nota: Scale en modo Nebula es complejo de mapear a un solo punto x/y, lo omitimos por simplicidad o lo mapeamos a drag X
         }
 
-        // Botón de Borrado Contextual (Esquina superior derecha de la figura)
+        // ... (Borrado y Edges igual que antes) ...
+        // Botón de Borrado Contextual
         if (isSelected) {
             var minX = 1f
             var minY = 1f
@@ -468,14 +616,10 @@ fun SurfaceHandles(
                 maxX = maxOf(maxX, corners[i * 2])
                 maxY = maxOf(maxY, corners[i * 2 + 1])
             }
-            
             val shapeWidth = maxX - minX
             val shapeHeight = maxY - minY
-            
-            // Añadir un 20% de margen al offset basado en la dimensión mayor
             val marginX = maxOf(shapeWidth * 0.2f, 0.08f) 
             val marginY = maxOf(shapeHeight * 0.2f, 0.08f)
-
             val density = LocalContext.current.resources.displayMetrics.density
             IconButton(
                 onClick = onDeleteSurface,
@@ -490,16 +634,15 @@ fun SurfaceHandles(
                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(16.dp))
             }
         }
-
-        // Manejadores de Aristas (para añadir puntos)
-        if (isSelected) {
+        
+        // Edges
+         if (isSelected) {
             val n = corners.size / 2
             for (i in 0 until n) {
                 val p1x = corners[i * 2]
                 val p1y = corners[i * 2 + 1]
                 val p2x = corners[(i + 1) % n * 2]
                 val p2y = corners[(i + 1) % n * 2 + 1]
-                
                 EdgeMidpointHandle(
                     x = (p1x + p2x) / 2f,
                     y = (p1y + p2y) / 2f,
@@ -510,22 +653,18 @@ fun SurfaceHandles(
             }
         }
 
-        // Dibujar borde y Huecos
+        // Borde
         Canvas(modifier = Modifier.fillMaxSize()) {
             val vertexCount = corners.size / 2
             if (vertexCount < 2) return@Canvas
-            
             val color = if (isSelected) Color.Cyan else Color.White.copy(alpha = 0.5f)
             val strokeWidth = if (isSelected) 2.dp.toPx() else 1.dp.toPx()
-
-            // Borde principal
             for (i in 0 until vertexCount) {
                 val startX = corners[i * 2] * width
                 val startY = corners[i * 2 + 1] * height
                 val nextIdx = (i + 1) % vertexCount
                 val endX = corners[nextIdx * 2] * width
                 val endY = corners[nextIdx * 2 + 1] * height
-                
                 drawLine(color, androidx.compose.ui.geometry.Offset(startX, startY), androidx.compose.ui.geometry.Offset(endX, endY), strokeWidth)
             }
         }
@@ -571,7 +710,9 @@ fun MoveHandle(
     y: Float,
     screenWidth: Float,
     screenHeight: Float,
-    onDrag: (Float, Float) -> Unit
+    color: Color = Color.White.copy(alpha = 0.5f),
+    onDrag: (Float, Float) -> Unit,
+    onClick: () -> Unit = {}
 ) {
     val density = LocalContext.current.resources.displayMetrics.density
     val currentOnDrag by rememberUpdatedState(onDrag)
@@ -583,16 +724,17 @@ fun MoveHandle(
                 y = (y * screenHeight / density).dp - 20.dp
             )
             .size(40.dp)
-            .background(Color.White.copy(alpha = 0.3f), CircleShape)
+            .background(color, CircleShape)
             .pointerInput(Unit) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
                     currentOnDrag(dragAmount.x / screenWidth, dragAmount.y / screenHeight)
                 }
-            },
+            }
+            .clickable { onClick() },
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Default.Settings, contentDescription = "Move", tint = Color.White.copy(alpha = 0.8f))
+        Icon(Icons.Default.Settings, contentDescription = "Move", tint = Color.Black.copy(alpha = 0.8f))
     }
 }
 
@@ -652,7 +794,8 @@ fun CornerHandle(
     screenHeight: Float,
     isSelected: Boolean,
     color: Color = Color.Cyan,
-    onDrag: (Float, Float) -> Unit
+    onDrag: (Float, Float) -> Unit,
+    onClick: () -> Unit = {}
 ) {
     val density = LocalContext.current.resources.displayMetrics.density
     val currentOnDrag by rememberUpdatedState(onDrag)
@@ -674,5 +817,6 @@ fun CornerHandle(
                     currentOnDrag(dragAmount.x, dragAmount.y)
                 }
             }
+            .clickable { onClick() }
     )
 }
