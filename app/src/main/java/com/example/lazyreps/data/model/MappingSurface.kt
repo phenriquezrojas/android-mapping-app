@@ -26,6 +26,7 @@ data class MappingSurface(
     ),
     // Polígonos de exclusión (huecos) dentro de esta superficie
     val holes: List<FloatArray> = emptyList(),
+    val isBlack: Boolean = false,
     val name: String = "Layer ${id.take(4)}",
     val isSelected: Boolean = false,
     val isLocked: Boolean = false
@@ -38,6 +39,7 @@ data class MappingSurface(
         if (videoUri != other.videoUri) return false
         if (!corners.contentEquals(other.corners)) return false
         if (!texCoords.contentEquals(other.texCoords)) return false
+        if (isBlack != other.isBlack) return false
         
         // Deep check for holes
         if (holes.size != other.holes.size) return false
@@ -53,6 +55,7 @@ data class MappingSurface(
         result = 31 * result + (videoUri?.hashCode() ?: 0)
         result = 31 * result + corners.contentHashCode()
         result = 31 * result + texCoords.contentHashCode()
+        result = 31 * result + isBlack.hashCode()
         // Deep hash for holes
         holes.forEach { hole ->
             result = 31 * result + hole.contentHashCode()

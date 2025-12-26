@@ -29,17 +29,22 @@ import kotlinx.coroutines.withContext
 
 @Composable
 fun FilePicker(
-    initialDirectory: File = Environment.getExternalStorageDirectory(),
+    initialDirectory: File? = null,
     onFileSelected: (File) -> Unit,
-    onDismissRequest: () -> Unit
+    onDismissRequest: () -> Unit,
+    onDirectoryChanged: (File) -> Unit = {}
 ) {
-    var currentDirectory by remember { mutableStateOf(initialDirectory) }
+    val rootDir = Environment.getExternalStorageDirectory()
+    var currentDirectory by remember { mutableStateOf(initialDirectory ?: rootDir) }
     var files by remember { mutableStateOf(emptyList<File>()) }
-    // Cache simple de thumbnails para esta sesión del picker
-    var thumbnails by remember { mutableStateOf(mapOf<String, Bitmap>()) }
+    
+    // Cache de thumbnails por sesión del picker para evitar regenerar si se sube/baja de nivel
+    val thumbnailsCache = remember { mutableMapOf<String, Bitmap>() }
 
     LaunchedEffect(currentDirectory) {
-        val allFiles = currentDirectory.listFiles() ?: emptyArray()
+        val allFiles = withContext(Dispatchers.IO) {
+            currentDirectory.listFiles() ?: emptyArray()
+        }
         files = allFiles.filter { file ->
             if (file.isDirectory) {
                 true
@@ -48,99 +53,51 @@ fun FilePicker(
                 name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".avi") || name.endsWith(".mov")
             }
         }.sortedWith(compareBy({ !it.isDirectory }, { it.name.lowercase() }))
-
-        // Generar thumbnails en background
-        withContext(Dispatchers.IO) {
-            val newThumbs = mutableMapOf<String, Bitmap>()
-            files.filter { !it.isDirectory }.forEach { videoFile ->
-                try {
-                    // ThumbnailUtils.createVideoThumbnail es viejo pero funciona bien en Android 7
-                    // Usamos la versión legacy que es sincrona
-                    val bitmap = ThumbnailUtils.createVideoThumbnail(
-                        videoFile.absolutePath,
-                        MediaStore.Images.Thumbnails.MINI_KIND
-                    )
-                    if (bitmap != null) {
-                        newThumbs[videoFile.absolutePath] = bitmap
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-            }
-             withContext(Dispatchers.Main) {
-                thumbnails = newThumbs
-            }
-        }
+        
+        onDirectoryChanged(currentDirectory)
     }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
         title = { Text("Seleccionar Video") },
         text = {
-            Column(modifier = Modifier.fillMaxWidth().height(400.dp)) {
+            Column(modifier = Modifier.fillMaxWidth().height(450.dp)) {
                 // Header con ruta actual y botón atrás
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (currentDirectory.absolutePath != Environment.getExternalStorageDirectory().absolutePath) {
+                    if (currentDirectory.absolutePath != rootDir.absolutePath) {
                         IconButton(onClick = { currentDirectory.parentFile?.let { currentDirectory = it } }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Subir nivel")
                         }
                     }
                     Text(
-                        text = currentDirectory.name,
+                        text = if (currentDirectory.absolutePath == rootDir.absolutePath) "Almacenamiento" else currentDirectory.name,
                         style = MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(start = 8.dp)
+                        modifier = Modifier.padding(start = 8.dp),
+                        maxLines = 1
                     )
                 }
                 
                 Divider()
 
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(files) { file ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    if (file.isDirectory) {
-                                        currentDirectory = file
-                                    } else {
-                                        onFileSelected(file)
-                                    }
-                                }
-                                .padding(vertical = 12.dp, horizontal = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                imageVector = if (file.isDirectory) Icons.Default.Folder else Icons.Default.InsertDriveFile,
-                                contentDescription = null,
-                                tint = if (file.isDirectory) Color(0xFFFFC107) else Color(0xFF4CAF50),
-                                modifier = Modifier.size(24.dp)
-                            )
-                            Spacer(modifier = Modifier.width(16.dp))
-                            
-                            if (!file.isDirectory) {
-                                val thumb = thumbnails[file.absolutePath]
-                                if (thumb != null) {
-                                    Image(
-                                        bitmap = thumb.asImageBitmap(),
-                                        contentDescription = "Thumbnail",
-                                        contentScale = ContentScale.Crop,
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .clip(RoundedCornerShape(4.dp))
-                                    )
-                                    Spacer(modifier = Modifier.width(8.dp))
+                    items(files, key = { it.absolutePath }) { file ->
+                        FilePickerItem(
+                            file = file,
+                            thumbnail = thumbnailsCache[file.absolutePath],
+                            onThumbnailLoaded = { bitmap ->
+                                thumbnailsCache[file.absolutePath] = bitmap
+                            },
+                            onClick = {
+                                if (file.isDirectory) {
+                                    currentDirectory = file
+                                } else {
+                                    onFileSelected(file)
                                 }
                             }
-                            
-                            Text(
-                                text = file.name,
-                                style = MaterialTheme.typography.bodyMedium
-                            )
-                        }
-                        Divider(color = Color.LightGray.copy(alpha = 0.3f))
+                        )
                     }
                 }
             }
@@ -151,4 +108,82 @@ fun FilePicker(
             }
         }
     )
+}
+
+@Composable
+fun FilePickerItem(
+    file: File,
+    thumbnail: Bitmap?,
+    onThumbnailLoaded: (Bitmap) -> Unit,
+    onClick: () -> Unit
+) {
+    var loadedThumbnail by remember { mutableStateOf(thumbnail) }
+
+    if (!file.isDirectory && loadedThumbnail == null) {
+        LaunchedEffect(file.absolutePath) {
+            withContext(Dispatchers.IO) {
+                try {
+                    val bitmap = ThumbnailUtils.createVideoThumbnail(
+                        file.absolutePath,
+                        MediaStore.Images.Thumbnails.MINI_KIND
+                    )
+                    if (bitmap != null) {
+                        withContext(Dispatchers.Main) {
+                            loadedThumbnail = bitmap
+                            onThumbnailLoaded(bitmap)
+                        }
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
+        }
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onClick() }
+            .padding(vertical = 8.dp, horizontal = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(modifier = Modifier.size(40.dp), contentAlignment = Alignment.Center) {
+            if (file.isDirectory) {
+                Icon(
+                    imageVector = Icons.Default.Folder,
+                    contentDescription = null,
+                    tint = Color(0xFFFFC107),
+                    modifier = Modifier.size(28.dp)
+                )
+            } else {
+                if (loadedThumbnail != null) {
+                    Image(
+                        bitmap = loadedThumbnail!!.asImageBitmap(),
+                        contentDescription = "Thumbnail",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(4.dp))
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.InsertDriveFile,
+                        contentDescription = null,
+                        tint = Color(0xFF4CAF50),
+                        modifier = Modifier.size(24.dp)
+                    )
+                }
+            }
+        }
+        
+        Spacer(modifier = Modifier.width(16.dp))
+        
+        Text(
+            text = file.name,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            modifier = Modifier.weight(1f)
+        )
+    }
+    Divider(color = Color.LightGray.copy(alpha = 0.2f))
 }

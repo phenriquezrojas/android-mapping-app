@@ -42,7 +42,8 @@ data class MappingUiState(
     val selectedSurfaceId: String? = null,
     val projects: List<MappingProject> = emptyList(),
     val errorMessage: String? = null,
-    val isPlaying: Boolean = false
+    val isPlaying: Boolean = false,
+    val lastVisitedDirectory: String? = null
 )
 
 @HiltViewModel
@@ -231,6 +232,53 @@ class MappingViewModel @Inject constructor(
         }
         renderer.updateSurfaces(_uiState.value.surfaces)
         saveCurrentState()
+    }
+
+    fun moveSurfaceUp(id: String) {
+        _uiState.update { state ->
+            val index = state.surfaces.indexOfFirst { it.id == id }
+            if (index != -1 && index < state.surfaces.size - 1) {
+                val updated = state.surfaces.toMutableList()
+                val item = updated.removeAt(index)
+                updated.add(index + 1, item)
+                state.copy(surfaces = updated)
+            } else state
+        }
+        renderer.updateSurfaces(_uiState.value.surfaces)
+        saveCurrentState()
+    }
+
+    fun moveSurfaceDown(id: String) {
+        _uiState.update { state ->
+            val index = state.surfaces.indexOfFirst { it.id == id }
+            if (index > 0) {
+                val updated = state.surfaces.toMutableList()
+                val item = updated.removeAt(index)
+                updated.add(index - 1, item)
+                state.copy(surfaces = updated)
+            } else state
+        }
+        renderer.updateSurfaces(_uiState.value.surfaces)
+        saveCurrentState()
+    }
+
+    fun toggleSurfaceBlack(id: String) {
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(isBlack = !it.isBlack) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        renderer.updateSurfaces(_uiState.value.surfaces)
+        saveCurrentState()
+    }
+
+    fun updateLastVisitedDirectory(path: String) {
+        _uiState.update { it.copy(lastVisitedDirectory = path) }
+        viewModelScope.launch(Dispatchers.IO) {
+            val prefs = context.getSharedPreferences("mapping_prefs", Context.MODE_PRIVATE)
+            prefs.edit().putString("last_visited_dir", path).apply()
+        }
     }
 
 
@@ -553,7 +601,8 @@ class MappingViewModel @Inject constructor(
         val json = prefs.getString("current_surfaces_json", null) ?: return
         try {
             val surfaces = deserializeSurfaces(json)
-            _uiState.update { it.copy(surfaces = surfaces) }
+            val lastDir = prefs.getString("last_visited_dir", null)
+            _uiState.update { it.copy(surfaces = surfaces, lastVisitedDirectory = lastDir) }
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -607,6 +656,7 @@ class MappingViewModel @Inject constructor(
             val obj = JSONObject().apply {
                 put("id", surface.id)
                 put("videoUri", videoUriString)
+                put("isBlack", surface.isBlack)
                 
                 val cornersArray = JSONArray()
                 surface.corners.forEach { cornersArray.put(it.toDouble()) }
@@ -639,7 +689,8 @@ class MappingViewModel @Inject constructor(
             val obj = array.getJSONObject(i)
             val surfaceId = obj.getString("id")
             val videoUriString = obj.optString("videoUri", "")
-            Log.d("MappingViewModel", "  Deserializing surface $surfaceId: videoUri string = '$videoUriString'")
+            val isBlack = obj.optBoolean("isBlack", false)
+            Log.d("MappingViewModel", "  Deserializing surface $surfaceId: videoUri string = '$videoUriString', isBlack = $isBlack")
             
             val cornersArray = obj.getJSONArray("corners")
             val corners = FloatArray(cornersArray.length())
@@ -670,7 +721,8 @@ class MappingViewModel @Inject constructor(
                 videoUri = parsedUri,
                 corners = corners,
                 texCoords = tex,
-                holes = holesList
+                holes = holesList,
+                isBlack = isBlack
             ))
         }
         return surfaces

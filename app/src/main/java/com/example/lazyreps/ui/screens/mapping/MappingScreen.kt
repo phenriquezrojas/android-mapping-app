@@ -183,6 +183,10 @@ fun MappingScreen(
                     onOpenProjects = { showProjectsDialog = true },
                     onSaveProject = { showSaveDialog = true },
                     onPlayVideos = { viewModel.togglePlayPause() },
+                    onMoveUp = { id -> viewModel.moveSurfaceUp(id) },
+                    onMoveDown = { id -> viewModel.moveSurfaceDown(id) },
+                    onToggleBlack = { id -> viewModel.toggleSurfaceBlack(id) },
+                    isBlack = uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.isBlack ?: false,
                     hasSurfaces = uiState.surfaces.isNotEmpty(),
                     isPlaying = uiState.isPlaying,
                     isNebulaMode = isNebulaMode,
@@ -301,6 +305,7 @@ fun MappingScreen(
 
         if (showFilePicker) {
             com.example.lazyreps.ui.components.FilePicker(
+                initialDirectory = uiState.lastVisitedDirectory?.let { java.io.File(it) },
                 onFileSelected = { file ->
                     showFilePicker = false
                     try {
@@ -311,6 +316,9 @@ fun MappingScreen(
                     } catch (e: Exception) {
                         viewModel.reportError("File selection error: ${e.message}")
                     }
+                },
+                onDirectoryChanged = { dir ->
+                    viewModel.updateLastVisitedDirectory(dir.absolutePath)
                 },
                 onDismissRequest = { showFilePicker = false }
             )
@@ -329,6 +337,10 @@ fun MappingControls(
     onOpenProjects: () -> Unit,
     onSaveProject: () -> Unit,
     onPlayVideos: () -> Unit,
+    onMoveUp: (String) -> Unit,
+    onMoveDown: (String) -> Unit,
+    onToggleBlack: (String) -> Unit,
+    isBlack: Boolean,
     hasSurfaces: Boolean,
     isPlaying: Boolean,
     isNebulaMode: Boolean,
@@ -346,6 +358,18 @@ fun MappingControls(
                     Button(onClick = onPickVideo) {
                         Text("Video")
                     }
+                    Button(
+                        onClick = { onToggleBlack(selectedSurfaceId) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isBlack) Color.DarkGray else Color.Black
+                        )
+                    ) {
+                        Text(if (isBlack) "Normal" else "Negro")
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onMoveUp(selectedSurfaceId) }) { Text("↑ Capa") }
+                    Button(onClick = { onMoveDown(selectedSurfaceId) }) { Text("↓ Capa") }
                 }
             }
             
@@ -593,9 +617,21 @@ fun SurfaceHandles(
                 }
             )
 
+            // Buscar coordenadas extremas para posicionamiento relativo
+            var minX = 1f
+            var minY = 1f
+            var maxX = 0f
+            var maxY = 0f
+            for (i in 0 until corners.size / 2) {
+                minX = minOf(minX, corners[i * 2])
+                minY = minOf(minY, corners[i * 2 + 1])
+                maxX = maxOf(maxX, corners[i * 2])
+                maxY = maxOf(maxY, corners[i * 2 + 1])
+            }
+
             ScaleHandle(
-                x = centerX, 
-                y = centerY + 0.08f,
+                x = maxX + 0.1f, // 10% fuera a la derecha
+                y = maxY + 0.1f, // 10% fuera abajo
                 screenWidth = width,
                 screenHeight = height,
                 onScale = { f -> if (!isNebulaMode) onScaleSurface(f) }
@@ -616,10 +652,8 @@ fun SurfaceHandles(
                 maxX = maxOf(maxX, corners[i * 2])
                 maxY = maxOf(maxY, corners[i * 2 + 1])
             }
-            val shapeWidth = maxX - minX
-            val shapeHeight = maxY - minY
-            val marginX = maxOf(shapeWidth * 0.2f, 0.08f) 
-            val marginY = maxOf(shapeHeight * 0.2f, 0.08f)
+            val marginX = 0.1f // 10%
+            val marginY = 0.1f // 10%
             val density = LocalContext.current.resources.displayMetrics.density
             IconButton(
                 onClick = onDeleteSurface,

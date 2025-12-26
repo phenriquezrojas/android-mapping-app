@@ -25,8 +25,9 @@ class MappingRenderer(
     private var positionHandle = 0
     private var texCoordHandle = 0
     private var textureHandle = 0
+    private var blackHandle = 0
 
-    private var textures = IntArray(10) // Soporta hasta 10 superficies por ahora
+    private val surfaceTextureIds = mutableMapOf<String, Int>()
     private val surfaceTextures = mutableMapOf<String, SurfaceTexture>()
     private val surfaces = mutableMapOf<String, Surface>()
     private val pendingSurfaceCallbacks = mutableMapOf<String, MutableList<(Surface) -> Unit>>()
@@ -59,6 +60,10 @@ class MappingRenderer(
             surfaceTextures.values.forEach { it.release() }
             surfaceTextures.clear()
             surfaces.clear()
+            surfaceTextureIds.values.forEach { id ->
+                GLES20.glDeleteTextures(1, intArrayOf(id), 0)
+            }
+            surfaceTextureIds.clear()
             pendingSurfaceCallbacks.clear()
         }
     }
@@ -90,9 +95,7 @@ class MappingRenderer(
         positionHandle = GLES20.glGetAttribLocation(program, "a_Position")
         texCoordHandle = GLES20.glGetAttribLocation(program, "a_TexCoord")
         textureHandle = GLES20.glGetUniformLocation(program, "u_Texture")
-
-        // Inicializar texturas OES para video
-        GLES20.glGenTextures(textures.size, textures, 0)
+        blackHandle = GLES20.glGetUniformLocation(program, "u_IsBlack")
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -105,22 +108,25 @@ class MappingRenderer(
         
         val surfacesToDraw = mappingSurfaces
         
-        surfacesToDraw.forEachIndexed { index, surface ->
-            if (index < textures.size) {
-                drawSurface(surface, index)
-            }
+        surfacesToDraw.forEach { surface ->
+            drawSurface(surface)
         }
     }
 
-    private fun drawSurface(surface: MappingSurface, index: Int) {
-        if (surface.videoUri == null) return
-
-        val texId = textures[index]
+    private fun drawSurface(surface: MappingSurface) {
+        val texId = synchronized(surfacesLock) {
+            if (!surfaceTextureIds.containsKey(surface.id)) {
+                val ids = IntArray(1)
+                GLES20.glGenTextures(1, ids, 0)
+                surfaceTextureIds[surface.id] = ids[0]
+            }
+            surfaceTextureIds[surface.id]!!
+        }
         
         val st = synchronized(surfacesLock) {
             if (!surfaceTextures.containsKey(surface.id)) {
                 val tex = SurfaceTexture(texId)
-                tex.setDefaultBufferSize(1280, 720) // Evitar 0x0 inicial
+                tex.setDefaultBufferSize(1280, 720)
                 tex.setOnFrameAvailableListener {
                     onFrameAvailable?.invoke()
                 }
@@ -128,16 +134,17 @@ class MappingRenderer(
                 surfaceTextures[surface.id] = tex
                 surfaces[surface.id] = s
                 
-                // Ejecutar callbacks pendientes
                 pendingSurfaceCallbacks.remove(surface.id)?.forEach { it(s) }
             }
             surfaceTextures[surface.id]!!
         }
 
-        try {
-            st.updateTexImage()
-        } catch (e: Exception) {
-            return
+        if (!surface.isBlack && surface.videoUri != null) {
+            try {
+                st.updateTexImage()
+            } catch (e: Exception) {
+                return
+            }
         }
 
         // Renderizado simple del polígono con textura
@@ -165,6 +172,7 @@ class MappingRenderer(
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
         GLES20.glUniform1i(textureHandle, 0)
+        GLES20.glUniform1f(blackHandle, if (surface.isBlack) 1.0f else 0.0f)
 
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
 
