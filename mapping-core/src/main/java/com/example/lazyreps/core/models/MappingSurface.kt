@@ -1,15 +1,15 @@
-package com.example.lazyreps.data.model
+package com.example.lazyreps.core.models
 
-import android.net.Uri
 import java.util.UUID
 
 /**
  * Representa una superficie de proyección con 4 esquinas deformables.
  * Los puntos están en coordenadas normalizadas (0.0 a 1.0).
+ * Independiente de Android framework.
  */
 data class MappingSurface(
     val id: String = UUID.randomUUID().toString(),
-    val videoUri: Uri? = null,
+    val videoPath: String? = null,
     // Puntos del polígono principal
     val corners: FloatArray = floatArrayOf(
         0.4f, 0.4f, // Superior-Izquierda
@@ -36,7 +36,7 @@ data class MappingSurface(
         if (other !is MappingSurface) return false
         
         if (id != other.id) return false
-        if (videoUri != other.videoUri) return false
+        if (videoPath != other.videoPath) return false
         if (!corners.contentEquals(other.corners)) return false
         if (!texCoords.contentEquals(other.texCoords)) return false
         if (isBlack != other.isBlack) return false
@@ -52,7 +52,7 @@ data class MappingSurface(
 
     override fun hashCode(): Int {
         var result = id.hashCode()
-        result = 31 * result + (videoUri?.hashCode() ?: 0)
+        result = 31 * result + (videoPath?.hashCode() ?: 0)
         result = 31 * result + corners.contentHashCode()
         result = 31 * result + texCoords.contentHashCode()
         result = 31 * result + isBlack.hashCode()

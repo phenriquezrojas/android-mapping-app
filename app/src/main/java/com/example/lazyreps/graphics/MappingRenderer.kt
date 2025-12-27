@@ -8,7 +8,8 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.view.Surface
 import com.example.lazyreps.R
-import com.example.lazyreps.data.model.MappingSurface
+import com.example.lazyreps.core.models.MappingSurface
+import com.example.lazyreps.core.models.MappingState
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -20,6 +21,8 @@ class MappingRenderer(
 ) : GLSurfaceView.Renderer {
 
     var onFrameAvailable: (() -> Unit)? = null
+    var onScreenSizeChanged: ((width: Int, height: Int) -> Unit)? = null
+    var requestRender: (() -> Unit)? = null
 
     private var program = 0
     private var positionHandle = 0
@@ -42,6 +45,7 @@ class MappingRenderer(
 
     fun updateSurfaces(newSurfaces: List<MappingSurface>) {
         mappingSurfaces = newSurfaces
+        requestRender?.invoke()
     }
 
     fun getSurfaceForId(id: String, onSurfaceCreated: (Surface) -> Unit) {
@@ -79,6 +83,14 @@ class MappingRenderer(
         }
     }
 
+    private var outputMode = "SHOW"
+
+    fun updateState(state: MappingState) {
+        mappingSurfaces = state.surfaces
+        outputMode = state.outputMode
+        requestRender?.invoke()
+    }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClearStencil(0)
@@ -96,10 +108,13 @@ class MappingRenderer(
         texCoordHandle = GLES20.glGetAttribLocation(program, "a_TexCoord")
         textureHandle = GLES20.glGetUniformLocation(program, "u_Texture")
         blackHandle = GLES20.glGetUniformLocation(program, "u_IsBlack")
+        
+        initOverlayProgram()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
         GLES20.glViewport(0, 0, width, height)
+        onScreenSizeChanged?.invoke(width, height)
     }
 
     override fun onDrawFrame(gl: GL10?) {
@@ -110,6 +125,10 @@ class MappingRenderer(
         
         surfacesToDraw.forEach { surface ->
             drawSurface(surface)
+        }
+        
+        if (outputMode == "EDIT") {
+            drawOverlays(surfacesToDraw)
         }
     }
 
@@ -139,7 +158,7 @@ class MappingRenderer(
             surfaceTextures[surface.id]!!
         }
 
-        if (!surface.isBlack && surface.videoUri != null) {
+        if (!surface.isBlack && surface.videoPath != null) {
             try {
                 st.updateTexImage()
             } catch (e: Exception) {
@@ -206,5 +225,55 @@ class MappingRenderer(
 
     private fun readShader(resourceId: Int): String {
         return context.resources.openRawResource(resourceId).bufferedReader().readText()
+    }
+
+    // --- Overlay Program ---
+    private var colorProgram = 0
+    private var colorPositionHandle = 0
+    private var colorColorHandle = 0
+
+    private fun initOverlayProgram() {
+        val vertexShader = loadShader(GLES20.GL_VERTEX_SHADER, readShader(R.raw.simple_vertex_shader))
+        val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, readShader(R.raw.simple_fragment_shader))
+        colorProgram = GLES20.glCreateProgram().apply {
+            GLES20.glAttachShader(this, vertexShader)
+            GLES20.glAttachShader(this, fragmentShader)
+            GLES20.glLinkProgram(this)
+        }
+        colorPositionHandle = GLES20.glGetAttribLocation(colorProgram, "a_Position")
+        colorColorHandle = GLES20.glGetUniformLocation(colorProgram, "u_Color")
+    }
+
+    private fun drawOverlays(surfaces: List<MappingSurface>) {
+        GLES20.glUseProgram(colorProgram)
+        GLES20.glLineWidth(5f)
+        
+        surfaces.forEach { surface ->
+            val vertexCount = surface.corners.size / 2
+            val vertices = FloatArray(surface.corners.size)
+            for (i in 0 until vertexCount) {
+                vertices[i * 2] = surface.corners[i * 2] * 2 - 1f
+                vertices[i * 2 + 1] = -(surface.corners[i * 2 + 1] * 2 - 1f)
+            }
+            // Close the loop
+            
+            val vBuf = ByteBuffer.allocateDirect(vertices.size * 4).run {
+                order(ByteOrder.nativeOrder())
+                asFloatBuffer().apply { put(vertices).position(0) }
+            }
+
+            GLES20.glEnableVertexAttribArray(colorPositionHandle)
+            GLES20.glVertexAttribPointer(colorPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+
+            // Draw Outline (Cyan)
+            GLES20.glUniform4f(colorColorHandle, 0f, 1f, 1f, 1f)
+            GLES20.glDrawArrays(GLES20.GL_LINE_LOOP, 0, vertexCount)
+
+            // Draw Vertices (Red)
+            GLES20.glUniform4f(colorColorHandle, 1f, 0f, 0f, 1f)
+            GLES20.glDrawArrays(GLES20.GL_POINTS, 0, vertexCount)
+
+            GLES20.glDisableVertexAttribArray(colorPositionHandle)
+        }
     }
 }

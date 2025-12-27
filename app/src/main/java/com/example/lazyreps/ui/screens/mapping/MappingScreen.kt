@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.PlayArrow
@@ -20,12 +19,30 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Fullscreen
+import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.animation.*
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.zIndex
+
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
@@ -42,6 +59,7 @@ import com.example.lazyreps.graphics.MappingRenderer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import com.example.lazyreps.core.models.MappingShape
 
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
@@ -55,6 +73,9 @@ fun MappingScreen(
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
     val renderer = remember { MappingRenderer(context) }
+    
+    // Mantener la pantalla encendida durante la ejecución de la app
+    LocalView.current.keepScreenOn = true
     
     val permissionState = com.google.accompanist.permissions.rememberPermissionState(
         android.Manifest.permission.READ_EXTERNAL_STORAGE
@@ -87,6 +108,8 @@ fun MappingScreen(
             val controller = WindowCompat.getInsetsController(win, view)
             if (uiState.isProjectionMode) {
                 controller.hide(WindowInsetsCompat.Type.systemBars())
+                controller.hide(WindowInsetsCompat.Type.navigationBars())
+                controller.hide(WindowInsetsCompat.Type.statusBars())
                 controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             } else {
                 controller.show(WindowInsetsCompat.Type.systemBars())
@@ -104,73 +127,236 @@ fun MappingScreen(
     var projectName by remember { mutableStateOf("") }
     var pendingLoadProjectId by remember { mutableStateOf<String?>(null) }
 
-    // Toggle para modo Nebula (Click-Move-Click)
-    var isNebulaMode by remember { mutableStateOf(false) }
+    var showRoleDialog by remember { mutableStateOf(false) }
+    
+    if (showRoleDialog) {
+        val appVersion = com.example.lazyreps.BuildConfig.VERSION_NAME
+        PremiumDialog(
+            onDismissRequest = { showRoleDialog = false },
+            title = "Remote Config (v$appVersion)"
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(
+                    "Select operation mode:",
+                    color = Color.White.copy(alpha = 0.7f),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                
+                RoleOption(
+                    title = "Projector (Host)",
+                    subtitle = "Modo principal: Proyectar y recibir comandos",
+                    icon = Icons.Default.PlayArrow,
+                    isSelected = uiState.executionMode == ExecutionMode.SERVER || uiState.executionMode == ExecutionMode.STANDALONE,
+                    onClick = { 
+                        viewModel.switchExecutionMode(ExecutionMode.SERVER)
+                        showRoleDialog = false 
+                    }
+                )
+                
+                RoleOption(
+                    title = "Remote Controller",
+                    subtitle = "Controlar otro dispositivo vía Wi-Fi",
+                    icon = Icons.Default.Settings,
+                    isSelected = uiState.executionMode == ExecutionMode.CLIENT,
+                    onClick = { 
+                        viewModel.switchExecutionMode(ExecutionMode.CLIENT)
+                        showRoleDialog = false 
+                    }
+                )
+
+                if (uiState.localIp != null) {
+                    Surface(
+                        color = Color.White.copy(alpha = 0.05f),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            Text(
+                                "IP de este dispositivo: ",
+                                color = Color.Gray,
+                                style = MaterialTheme.typography.labelMedium
+                            )
+                            Text(
+                                uiState.localIp ?: "",
+                                color = Color.Cyan,
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                Divider(color = Color.White.copy(alpha = 0.1f))
+                
+                // Input IP Manual y Botón Reintentar
+                var manualIp by remember { mutableStateOf(uiState.serverIp ?: "") }
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR) {
+                        Text(
+                            text = "Error de conexión. Verifica la IP.",
+                            color = Color.Red,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+
+                    OutlinedTextField(
+                        value = manualIp,
+                        onValueChange = { manualIp = it },
+                        label = { Text("IP Manual (opcional)", color = Color.Gray) },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = MaterialTheme.colorScheme.primary, // Fixed color ref
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.3f)
+                        )
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(
+                            onClick = {
+                                if (manualIp.isNotBlank()) {
+                                    viewModel.connectToRemoteServer(manualIp)
+                                    showRoleDialog = false
+                                }
+                            },
+                            modifier = Modifier.weight(1f),
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTING) "Connecting..." else "Connect")
+                        }
+                        
+                        if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR) {
+                            IconButton(onClick = { viewModel.retryConnection() }) {
+                                Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Color.White)
+                            }
+                        }
+                    }
+                }
+
+
+            }
+        }
+    }
     
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
-
-        // ... Dialogs ... (omitted from replace chunk for brevity if they are above)
-        // Note: The previous tools have large context. I will target the variable block.
 
         if (uiState.errorMessage != null) {
             AlertDialog(
                 onDismissRequest = { viewModel.dismissError() },
-                title = { Text("Error") },
-                text = { Text(uiState.errorMessage ?: "Unknown error") },
+                title = { Text("Mensaje") },
+                text = { Text(uiState.errorMessage ?: "Unknown message") },
                 confirmButton = {
                     TextButton(onClick = { viewModel.dismissError() }) { Text("OK") }
                 }
             )
         }
-        // Motor de renderizado (OpenGL)
-        AndroidView(
-            factory = { ctx ->
-                GLSurfaceView(ctx).apply {
-                    setEGLContextClientVersion(2)
-                    setEGLConfigChooser(8, 8, 8, 8, 16, 8)
-                    setRenderer(renderer)
-                    renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                    renderer.onFrameAvailable = {
-                        requestRender()
-                    }
-                }
-            },
-            modifier = Modifier.fillMaxSize()
-        )
 
-        // Cuadrícula de referencia para edición
-        if (!uiState.isProjectionMode) {
-            ReferenceGrid()
+        if (uiState.showUpdateConfirmation) {
+            val isRemoteNewer = uiState.remoteVersionCode > com.example.lazyreps.BuildConfig.VERSION_CODE
+            val message = if (isRemoteNewer) {
+                "Hay una nueva versión disponible en el servidor (${uiState.remoteAppVersion}).\n¿Deseas actualizar esta aplicación?"
+            } else {
+                "Tu versión es más reciente que la del servidor.\n¿Deseas actualizar el proyector a la versión ${uiState.appVersion}?"
+            }
+            
+            AlertDialog(
+                onDismissRequest = { viewModel.cancelUpdate() },
+                title = { Text("Actualización Disponible") },
+                text = { Text(message) },
+                confirmButton = {
+                    Button(onClick = { viewModel.confirmUpdate() }) { Text("Actualizar Ahora") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { viewModel.cancelUpdate() }) { Text("Más tarde") }
+                }
+            )
         }
 
-        // Overlay de edición (solo si no estamos en modo proyección)
-        if (!uiState.isProjectionMode) {
-            // Capa táctil para mover puntos
-            val sortedSurfaces = uiState.surfaces.sortedBy { it.id == uiState.selectedSurfaceId }
-            sortedSurfaces.forEach { surface ->
-                SurfaceHandles(
-                    surface = surface,
-                    selectedSurfaceId = uiState.selectedSurfaceId,
-                    onPointsUpdated = { updatedPoints ->
-                        viewModel.updateSurfaceCorners(surface.id, updatedPoints)
-                    },
-                    onSelect = { viewModel.selectSurface(surface.id) },
-                    onAddPointToSide = { sideIndex ->
-                        viewModel.addPointToSide(surface.id, sideIndex)
-                    },
-                    onMoveSurface = { dx, dy ->
-                        viewModel.moveSurface(surface.id, dx, dy)
-                    },
-                    onScaleSurface = { factor ->
-                        viewModel.scaleSurface(surface.id, factor)
-                    },
-                    onDeleteSurface = { showDeleteConfirm = surface.id },
-                    isNebulaMode = isNebulaMode
-                )
+
+
+        // Capa de Proyección/Visualización (Canvas)
+        // Adaptar tamaño al proyector si somos cliente
+        val serverWidth = uiState.screenWidth
+        val serverHeight = uiState.screenHeight
+        
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            val containerW = maxWidth.value
+            val containerH = maxHeight.value
+            
+            val contentModifier = if (uiState.executionMode == ExecutionMode.CLIENT && serverWidth > 0 && serverHeight > 0) {
+                val serverAspect = serverWidth / serverHeight
+                val containerAspect = containerW / containerH
+                
+                if (containerAspect > serverAspect) {
+                    Modifier.height(containerH.dp).width((containerH * serverAspect).dp)
+                } else {
+                    Modifier.width(containerW.dp).height((containerW / serverAspect).dp)
+                }
+            } else {
+                Modifier.fillMaxSize()
             }
 
+            var scale by remember { mutableStateOf(1f) }
+            var offset by remember { mutableStateOf(Offset.Zero) }
+            val state = rememberTransformableState { zoomChange, panChange, _ ->
+                scale = (scale * zoomChange).coerceIn(0.5f, 5f)
+                offset += panChange
+            }
 
-            // Controles de la interfaz
+            Box(
+                modifier = contentModifier
+                    .align(Alignment.Center)
+                    .graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offset.x,
+                        translationY = offset.y
+                    )
+                    .transformable(state = state)
+            ) {
+                AndroidView(
+                    factory = { ctx ->
+                        GLSurfaceView(ctx).apply {
+                            setEGLContextClientVersion(2)
+                            // Usar el renderer local que ha sido recordado (remember)
+                            setRenderer(renderer)
+                            renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+                            
+                            // Importante: Vincular los callbacks para renderizado bajo demanda
+                            renderer.onFrameAvailable = { requestRender() }
+                            renderer.requestRender = { requestRender() }
+                        }
+                    },
+                    modifier = Modifier.fillMaxSize()
+                )
+
+                if (!uiState.isProjectionMode) {
+                    ReferenceGrid()
+                    uiState.surfaces.forEach { surface ->
+                        SurfaceHandles(
+                            surface = surface,
+                            selectedSurfaceId = uiState.selectedSurfaceId,
+                            onPointsUpdated = { corners ->
+                                viewModel.updateSurfaceCorners(surface.id, corners)
+                            },
+                            onSelect = { viewModel.selectSurface(surface.id) },
+                            onAddPointToSide = { side -> viewModel.addPointToSide(surface.id, side) },
+                            onMoveSurface = { dx, dy -> viewModel.moveSurface(surface.id, dx, dy) },
+                            onScaleSurface = { factor -> viewModel.scaleSurface(surface.id, factor) },
+                            onDeleteSurface = { showDeleteConfirm = surface.id },
+                            isNebulaMode = uiState.executionMode == ExecutionMode.CLIENT
+                        )
+                    }
+                }
+            }
+        }
+
+        // Controles de la interfaz
+        val shouldHideUI = uiState.executionMode == ExecutionMode.SERVER && uiState.isFullScreen
+        if (!shouldHideUI) {
             BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
                 val screenW = maxWidth.value
                 val screenH = maxHeight.value
@@ -189,26 +375,32 @@ fun MappingScreen(
                     isBlack = uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.isBlack ?: false,
                     hasSurfaces = uiState.surfaces.isNotEmpty(),
                     isPlaying = uiState.isPlaying,
-                    isNebulaMode = isNebulaMode,
-                    onToggleNebulaMode = { isNebulaMode = !isNebulaMode }
+                    executionMode = uiState.executionMode,
+                    isConnected = uiState.connectionStatus,
+                    onOpenRoleSettings = { showRoleDialog = true },
+                    onRetryDiscovery = { viewModel.startDiscovery() },
+                    isFullScreen = uiState.isFullScreen,
+                    onToggleFullScreen = { viewModel.toggleFullScreen(it) },
+                    appVersion = uiState.appVersion,
+                    remoteAppVersion = uiState.remoteAppVersion
                 )
             }
         }
- else {
-            // Botón invisible o gesto para salir del modo proyección
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInteropFilter {
-                        if (it.action == MotionEvent.ACTION_DOWN) {
-                            viewModel.toggleProjectionMode()
-                        }
-                        true
-                    }
-            )
-        }
 
-        // Diálogos
+    // Manejo de Pantalla Completa (Inmersive Mode)
+    val view = LocalView.current
+    LaunchedEffect(uiState.isFullScreen) {
+        val window = (context as? android.app.Activity)?.window ?: return@LaunchedEffect
+        val controller = WindowCompat.getInsetsController(window, view)
+        if (uiState.isFullScreen) {
+            controller.hide(WindowInsetsCompat.Type.systemBars())
+            controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        } else {
+            controller.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // Diálogos
         if (showDeleteConfirm != null) {
             AlertDialog(
                 onDismissRequest = { showDeleteConfirm = null },
@@ -269,43 +461,42 @@ fun MappingScreen(
             )
         }
 
-        if (showProjectsDialog) {
-            AlertDialog(
-                onDismissRequest = { showProjectsDialog = false },
-                title = { Text("Proyectos Guardados") },
-                text = {
-                    val dateFormat = remember { SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault()) }
-                    LazyColumn {
-                        items(uiState.projects) { project ->
-                            ListItem(
-                                headlineContent = { Text(project.name) },
-                                supportingContent = { 
-                                    Text(dateFormat.format(Date(project.updatedAt)))
-                                },
-                                trailingContent = {
-                                    IconButton(onClick = { viewModel.removeProject(project.id) }) {
-                                        Icon(Icons.Default.Delete, contentDescription = "Delete Project", tint = Color.Red.copy(alpha = 0.6f))
-                                    }
-                                },
-                                modifier = Modifier.clickable {
-                                    pendingLoadProjectId = project.id
-                                    // Trigger load
-                                    viewModel.loadProject(project.id, loadVideos = true)
-                                    showProjectsDialog = false
-                                }
-                            )
-                        }
-                    }
-                },
-                confirmButton = {
-                    TextButton(onClick = { showProjectsDialog = false }) { Text("Cerrar") }
+    if (showProjectsDialog) {
+        PremiumDialog(
+            onDismissRequest = { showProjectsDialog = false },
+            title = "Proyectos Guardados"
+        ) {
+            if (uiState.projects.isEmpty()) {
+                Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                    Text("No hay proyectos guardados", color = Color.Gray)
                 }
-            )
+            } else {
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 400.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    items(uiState.projects) { project ->
+                        ProjectItem(
+                            project = project,
+                            onClick = {
+                                pendingLoadProjectId = project.id
+                                showProjectsDialog = false
+                            },
+                            onDelete = { viewModel.removeProject(project.id) }
+                        )
+                    }
+                }
+            }
         }
+    }
 
         if (showFilePicker) {
+            LaunchedEffect(Unit) {
+                viewModel.fetchRemoteLibrary()
+            }
             com.example.lazyreps.ui.components.FilePicker(
                 initialDirectory = uiState.lastVisitedDirectory?.let { java.io.File(it) },
+                remoteLibrary = uiState.remoteLibrary,
                 onFileSelected = { file ->
                     showFilePicker = false
                     try {
@@ -317,12 +508,76 @@ fun MappingScreen(
                         viewModel.reportError("File selection error: ${e.message}")
                     }
                 },
+                onRemoteFileSelected = { path ->
+                    showFilePicker = false
+                    uiState.selectedSurfaceId?.let { id ->
+                        viewModel.dispatchCommand(com.example.lazyreps.core.models.MappingCommand.SetVideoPath(id, path))
+                    }
+                },
                 onDirectoryChanged = { dir ->
                     viewModel.updateLastVisitedDirectory(dir.absolutePath)
                 },
                 onDismissRequest = { showFilePicker = false }
             )
         }
+
+        if (uiState.isUpdatingRemote) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.8f))
+                    .clickable(enabled = false) { }
+                    .zIndex(99f), // Force top layer
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    if (uiState.updateProgress < 0.01f) {
+                        CircularProgressIndicator(
+                            color = Color.Cyan,
+                            modifier = Modifier.size(80.dp),
+                            strokeWidth = 6.dp
+                        )
+                    } else {
+                        CircularProgressIndicator(
+                            progress = uiState.updateProgress,
+                            color = Color.Cyan,
+                            modifier = Modifier.size(80.dp),
+                            strokeWidth = 6.dp
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text(
+                        "Enviando actualización...",
+                        color = Color.White,
+                        style = MaterialTheme.typography.headlineSmall
+                    )
+                    Text(
+                        "${(uiState.updateProgress * 100).toInt()}%",
+                        color = Color.Cyan,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    LinearProgressIndicator(
+                        progress = uiState.updateProgress,
+                        modifier = Modifier.fillMaxWidth().height(8.dp),
+                        color = Color.Cyan,
+                        trackColor = Color.White.copy(alpha = 0.2f)
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Text(
+                        "Por favor, no cierres la aplicación.\nUna vez finalizado el envío, deberás aceptar la instalación en el Proyector.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+            }
+        }
+
 
     }
 }
@@ -343,44 +598,149 @@ fun MappingControls(
     isBlack: Boolean,
     hasSurfaces: Boolean,
     isPlaying: Boolean,
-    isNebulaMode: Boolean,
-    onToggleNebulaMode: () -> Unit
+    executionMode: ExecutionMode,
+    isConnected: com.example.lazyreps.ui.screens.mapping.ConnectionStatus,
+    onOpenRoleSettings: () -> Unit,
+    onRetryDiscovery: () -> Unit,
+    isFullScreen: Boolean,
+    onToggleFullScreen: (Boolean) -> Unit,
+    appVersion: String,
+    remoteAppVersion: String? = null
 ) {
     var showAddMenu by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Column(
-            modifier = Modifier.align(Alignment.BottomStart),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
+        // --- BARRA SUPERIOR PREMIUM ---
+        Surface(
+            color = Color.Black.copy(alpha = 0.6f),
+            shape = CircleShape,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp)
+                .clickable { onOpenRoleSettings() } // Permitir clic en la barra para abrir settings
         ) {
-            if (selectedSurfaceId != null) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onPickVideo) {
-                        Text("Video")
-                    }
-                    Button(
-                        onClick = { onToggleBlack(selectedSurfaceId) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (isBlack) Color.DarkGray else Color.Black
-                        )
-                    ) {
-                        Text(if (isBlack) "Normal" else "Negro")
-                    }
+            Row(
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                val statusColor = when (isConnected) {
+                    com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTED -> Color.Green
+                    com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTING -> Color.Yellow
+                    com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR -> Color.Red
+                    else -> Color.Gray
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onMoveUp(selectedSurfaceId) }) { Text("↑ Capa") }
-                    Button(onClick = { onMoveDown(selectedSurfaceId) }) { Text("↓ Capa") }
+                
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(statusColor, CircleShape)
+                )
+                Column {
+                    Text(
+                        text = when (executionMode) {
+                            ExecutionMode.CLIENT -> "REMOTE CONTROLLER"
+                            else -> "PROJECTOR HOST" // Consolidated
+                        },
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "v$appVersion${if (remoteAppVersion != null) " | Remote: v$remoteAppVersion" else ""}",
+                        color = if (remoteAppVersion != null && remoteAppVersion != appVersion) Color.Yellow else Color.White.copy(alpha = 0.5f),
+                        style = MaterialTheme.typography.labelSmall
+                    )
+                }
+
+                if (isConnected == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR || isConnected == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.DISCONNECTED) {
+                    IconButton(
+                        onClick = onRetryDiscovery,
+                        modifier = Modifier.size(24.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = "Retry Discovery",
+                            tint = Color.White,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
                 }
             }
+        }
+
+        // --- PANEL LATERAL DE HERRAMIENTAS (GLASS) ---
+        Column(
+            modifier = Modifier.align(Alignment.CenterStart),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            GlassIconButton(
+                onClick = onOpenRoleSettings,
+                icon = Icons.Default.Settings,
+                active = isConnected == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTED,
+                activeColor = Color.Cyan
+            )
             
-            // Menú de Formas Visual
-            if (showAddMenu) {
+            GlassIconButton(
+                onClick = onOpenProjects,
+                icon = Icons.Default.Folder
+            )
+
+            GlassIconButton(
+                onClick = onSaveProject,
+                icon = Icons.Default.Done
+            )
+            
+            if (executionMode == ExecutionMode.CLIENT || executionMode == ExecutionMode.STANDALONE) {
+                GlassIconButton(
+                    onClick = { onToggleFullScreen(!isFullScreen) },
+                    icon = if (isFullScreen) Icons.Default.FullscreenExit else Icons.Default.Fullscreen,
+                    active = isFullScreen,
+                    activeColor = Color(0xFFFF9800)
+                )
+            }
+        }
+
+        // --- CONTROLES DE SUPERFICIE SELECCIONADA ---
+        if (selectedSurfaceId != null) {
+            Column(
+                modifier = Modifier.align(Alignment.CenterEnd),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                GlassIconButton(onClick = onPickVideo, icon = Icons.Default.PlayArrow)
+                GlassIconButton(
+                    onClick = { onToggleBlack(selectedSurfaceId) },
+                    icon = Icons.Default.Warning, // Representa modo negro
+                    active = isBlack,
+                    activeColor = Color.Red
+                )
+                GlassIconButton(onClick = { onMoveUp(selectedSurfaceId) }, icon = Icons.Default.KeyboardArrowUp)
+                GlassIconButton(onClick = { onMoveDown(selectedSurfaceId) }, icon = Icons.Default.KeyboardArrowDown)
+            }
+        }
+
+        // --- BARRA INFERIOR DE ACCIÓN PRINCIPAL ---
+        Column(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            // Menú de Formas con Glassmorphism
+            AnimatedVisibility(
+                visible = showAddMenu,
+                enter = fadeIn() + expandVertically(),
+                exit = fadeOut() + shrinkVertically()
+            ) {
                 Surface(
-                    tonalElevation = 8.dp,
-                    shape = MaterialTheme.shapes.medium,
+                    color = Color.White.copy(alpha = 0.15f),
+                    shape = RoundedCornerShape(24.dp),
+                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
                     modifier = Modifier.padding(bottom = 8.dp)
                 ) {
-                    Row(modifier = Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(20.dp)
+                    ) {
                         MappingShape.values().forEach { shape ->
                             Column(
                                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -390,54 +750,101 @@ fun MappingControls(
                                 }
                             ) {
                                 ShapeIcon(shape)
-                                Text(shape.name.lowercase().replaceFirstChar { if (it.isLowerCase()) it.titlecase(Locale.getDefault()) else it.toString() }, style = MaterialTheme.typography.labelSmall)
+                                Spacer(Modifier.height(4.dp))
+                                Text(
+                                    text = shape.name.lowercase().capitalize(),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color.White
+                                )
                             }
                         }
                     }
                 }
             }
 
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FloatingActionButton(onClick = { showAddMenu = !showAddMenu }) {
-                    Icon(if (showAddMenu) Icons.Default.Delete else Icons.Default.Add, contentDescription = "Add Shape")
+            // Botones Flotantes Principales
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(20.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                LargeGlassButton(
+                    onClick = { showAddMenu = !showAddMenu },
+                    icon = if (showAddMenu) Icons.Default.Close else Icons.Default.Add,
+                    color = MaterialTheme.colorScheme.primary
+                )
+
+                LargeGlassButton(
+                    onClick = onToggleProjection,
+                    icon = Icons.Default.PlayArrow,
+                    color = if (hasSurfaces) Color(0xFF4CAF50) else Color.Gray,
+                    enabled = hasSurfaces
+                )
+
+                if (hasSurfaces) {
+                    LargeGlassButton(
+                        onClick = onPlayVideos,
+                        icon = if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                        color = if (isPlaying) Color.Red else Color(0xFF2196F3)
+                    )
                 }
-                FloatingActionButton(onClick = onClearAll, containerColor = Color.DarkGray) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Clear All", tint = Color.White)
-                }
-                 // Botón Modo Nebula (Gamepad)
-                FloatingActionButton(
-                    onClick = onToggleNebulaMode,
-                    containerColor = if (isNebulaMode) Color.Green else Color.DarkGray
-                ) {
-                    Icon(Icons.Default.Settings, contentDescription = "Nebula Mode", tint = if (isNebulaMode) Color.Black else Color.White)
-                }
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FloatingActionButton(onClick = onSaveProject, containerColor = Color.DarkGray) {
-                    Icon(Icons.Default.Done, contentDescription = "Save Project", tint = Color.White)
-                }
-                FloatingActionButton(onClick = onOpenProjects, containerColor = Color.DarkGray) {
-                    Icon(Icons.Default.Folder, contentDescription = "Open Projects", tint = Color.White)
-                }
-            }
-            if (hasSurfaces) {
-                FloatingActionButton(onClick = onPlayVideos, containerColor = Color(0xFF4CAF50)) {
-                    // Usar un icono de Pause si está reproduciendo, o Play si no.
-                    val icon = if (isPlaying) androidx.compose.material.icons.Icons.Filled.Pause else Icons.Default.PlayArrow
-                    Icon(icon, contentDescription = "Play/Pause Videos", tint = Color.White)
-                }
-            }
-            FloatingActionButton(onClick = onToggleProjection, containerColor = MaterialTheme.colorScheme.primary) {
-                Icon(Icons.Default.PlayArrow, contentDescription = "Project")
+
+                LargeGlassButton(
+                    onClick = onClearAll,
+                    icon = Icons.Default.Refresh,
+                    color = Color.DarkGray
+                )
             }
         }
-        
-        Text(
-            if (isNebulaMode) "REMOTE MODE" else "Video Mapping Editor",
-            color = if (isNebulaMode) Color.Green else Color.White,
-            style = MaterialTheme.typography.headlineSmall,
-            modifier = Modifier.align(Alignment.TopCenter).padding(top = 16.dp)
+    }
+}
+
+@Composable
+fun GlassIconButton(
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    active: Boolean = false,
+    activeColor: Color = Color.White,
+    enabled: Boolean = true
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        color = if (active) activeColor.copy(alpha = 0.3f) else Color.White.copy(alpha = 0.1f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, if (active) activeColor.copy(alpha = 0.5f) else Color.White.copy(alpha = 0.2f))
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            modifier = Modifier.padding(12.dp).size(24.dp),
+            tint = if (active) activeColor else Color.White
         )
+    }
+}
+
+@Composable
+fun LargeGlassButton(
+    onClick: () -> Unit,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    color: Color,
+    enabled: Boolean = true
+) {
+    Surface(
+        onClick = onClick,
+        enabled = enabled,
+        color = color.copy(alpha = 0.8f),
+        shape = CircleShape,
+        shadowElevation = 8.dp,
+        modifier = Modifier.size(64.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(32.dp),
+                tint = Color.White
+            )
+        }
     }
 }
 
@@ -458,13 +865,14 @@ fun ShapeIcon(shape: MappingShape) {
                 drawPath(path, color)
             }
             MappingShape.CIRCLE -> drawCircle(color, radius = size.width / 2)
+            MappingShape.QUAD -> drawRect(color, size = androidx.compose.ui.geometry.Size(size.width, size.height))
         }
     }
 }
 
 @Composable
 fun SurfaceHandles(
-    surface: com.example.lazyreps.data.model.MappingSurface,
+    surface: com.example.lazyreps.core.models.MappingSurface,
     selectedSurfaceId: String?,
     onPointsUpdated: (FloatArray) -> Unit,
     onSelect: () -> Unit,
@@ -570,13 +978,11 @@ fun SurfaceHandles(
                 isSelected = isSelected,
                 color = if (isGrabbed) grabbingColor else Color.Cyan,
                 onDrag = { dx, dy ->
-                    // Drag normal (Touch)
-                    if (!isNebulaMode) {
-                        val newCorners = corners.copyOf()
-                        newCorners[i * 2] = (newCorners[i * 2] + dx / width).coerceIn(0f, 1f)
-                        newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + dy / height).coerceIn(0f, 1f)
-                        onPointsUpdated(newCorners)
-                    }
+                    // Drag normal (Touch) - Habilitado siempre para permitir edición desde celular
+                    val newCorners = corners.copyOf()
+                    newCorners[i * 2] = (newCorners[i * 2] + dx / width).coerceIn(0f, 1f)
+                    newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + dy / height).coerceIn(0f, 1f)
+                    onPointsUpdated(newCorners)
                 },
                 onClick = {
                     // Click para agarrar/soltar en modo Nebula
@@ -608,7 +1014,7 @@ fun SurfaceHandles(
                 screenHeight = height,
                 color = if (isGrabbedMove) grabbingColor else Color.White.copy(alpha = 0.5f),
                 onDrag = { dx, dy ->
-                     if (!isNebulaMode) onMoveSurface(dx, dy)
+                     onMoveSurface(dx, dy)
                 },
                 onClick = {
                     if (isNebulaMode) {
@@ -630,8 +1036,8 @@ fun SurfaceHandles(
             }
 
             ScaleHandle(
-                x = maxX + 0.1f, // 10% fuera a la derecha
-                y = maxY + 0.1f, // 10% fuera abajo
+                x = maxX + 0.05f, // 5% fuera a la derecha
+                y = maxY + 0.05f, // 5% fuera abajo
                 screenWidth = width,
                 screenHeight = height,
                 onScale = { f -> if (!isNebulaMode) onScaleSurface(f) }
@@ -652,8 +1058,8 @@ fun SurfaceHandles(
                 maxX = maxOf(maxX, corners[i * 2])
                 maxY = maxOf(maxY, corners[i * 2 + 1])
             }
-            val marginX = 0.1f // 10%
-            val marginY = 0.1f // 10%
+            val marginX = 0.05f // 5%
+            val marginY = 0.05f // 5%
             val density = LocalContext.current.resources.displayMetrics.density
             IconButton(
                 onClick = onDeleteSurface,
@@ -853,4 +1259,102 @@ fun CornerHandle(
             }
             .clickable { onClick() }
     )
+}
+
+@Composable
+fun PremiumDialog(
+    onDismissRequest: () -> Unit,
+    title: String,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismissRequest) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = Color(0xFF1A1C1E).copy(alpha = 0.95f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+            shadowElevation = 24.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                content()
+            }
+        }
+    }
+}
+
+@Composable
+fun RoleOption(
+    title: String,
+    subtitle: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                tint = if (isSelected) MaterialTheme.colorScheme.primary else Color.White,
+                modifier = Modifier.size(24.dp)
+            )
+            Column {
+                Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Text(subtitle, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+fun ProjectItem(
+    project: MappingProject,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.White.copy(alpha = 0.05f),
+        shape = RoundedCornerShape(16.dp),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(project.name, color = Color.White, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()).format(Date(project.updatedAt)),
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.labelSmall
+                )
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red.copy(alpha = 0.7f))
+            }
+        }
+    }
 }
