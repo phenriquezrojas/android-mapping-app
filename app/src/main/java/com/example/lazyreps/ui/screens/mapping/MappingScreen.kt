@@ -7,8 +7,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -26,6 +29,8 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.animation.*
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.BorderStroke
@@ -47,6 +52,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.pointerInteropFilter
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import android.opengl.GLSurfaceView
 import androidx.compose.foundation.Canvas
@@ -59,7 +65,8 @@ import com.example.lazyreps.graphics.MappingRenderer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import com.example.lazyreps.core.models.MappingShape
+import com.example.lazyreps.core.models.*
+import com.example.lazyreps.core.models.SourceType
 
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
@@ -87,6 +94,7 @@ fun MappingScreen(
     var saveProjectName by remember { mutableStateOf("") }
 
     var showFilePicker by remember { mutableStateOf(false) }
+    var showContentSettings by remember { mutableStateOf(false) }
 
     // Función segura para lanzar video picker (Internal)
     val openVideoPicker = {
@@ -305,10 +313,13 @@ fun MappingScreen(
                 scale = (scale * zoomChange).coerceIn(0.5f, 5f)
                 offset += panChange
             }
-
+            
+            // Area de visualización del proyector (Canvas) con fondo oscuro para delimitar en el celular
             Box(
                 modifier = contentModifier
                     .align(Alignment.Center)
+                    // Añadimos un fondo oscuro para ver el área real del proyector en el celular
+                    .background(Color(0xFF0A0A0A))
                     .graphicsLayer(
                         scaleX = scale,
                         scaleY = scale,
@@ -321,9 +332,11 @@ fun MappingScreen(
                     factory = { ctx ->
                         GLSurfaceView(ctx).apply {
                             setEGLContextClientVersion(2)
+                            // Request stencil buffer (RGBA8888, 16-bit depth, 8-bit stencil)
+                            setEGLConfigChooser(8, 8, 8, 8, 16, 8)
                             // Usar el renderer local que ha sido recordado (remember)
                             setRenderer(renderer)
-                            renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+                            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
                             
                             // Importante: Vincular los callbacks para renderizado bajo demanda
                             renderer.onFrameAvailable = { requestRender() }
@@ -332,9 +345,66 @@ fun MappingScreen(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
-
-                if (!uiState.isProjectionMode) {
+ 
+                // Dibujar guías siempre en el celular, o si no estamos en modo proyección en el proyector
+                if (uiState.executionMode == ExecutionMode.CLIENT || !uiState.isProjectionMode) {
                     ReferenceGrid()
+                    
+                    // Helper function for point-in-polygon test
+                    fun isPointInPolygon(x: Float, y: Float, corners: FloatArray): Boolean {
+                        val n = corners.size / 2
+                        var inside = false
+                        var j = n - 1
+                        for (i in 0 until n) {
+                            val xi = corners[i * 2]
+                            val yi = corners[i * 2 + 1]
+                            val xj = corners[j * 2]
+                            val yj = corners[j * 2 + 1]
+                            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                                inside = !inside
+                            }
+                            j = i
+                        }
+                        return inside
+                    }
+                    
+                    // GLOBAL TOUCH LAYER - Handles surface selection (sits below handles)
+                    // This layer allows selecting any surface by tapping on it
+                    Canvas(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(uiState.surfaces.size, uiState.selectedSurfaceId) {
+                                detectTapGestures { offset ->
+                                    // Convert pixel coordinates to [0,1]
+                                    val x = offset.x / size.width
+                                    val y = offset.y / size.height
+                                    
+                                    // Find ALL surfaces that contain this point (in reverse order for z-order)
+                                    val surfacesUnderTouch = uiState.surfaces.reversed().filter { surface ->
+                                        isPointInPolygon(x, y, surface.corners)
+                                    }
+                                    
+                                    if (surfacesUnderTouch.isNotEmpty()) {
+                                        // If there's a selected surface under touch and multiple surfaces overlap, cycle
+                                        val currentlySelected = surfacesUnderTouch.find { it.id == uiState.selectedSurfaceId }
+                                        
+                                        if (currentlySelected != null && surfacesUnderTouch.size > 1) {
+                                            // Cycle to the next surface
+                                            val currentIndex = surfacesUnderTouch.indexOf(currentlySelected)
+                                            val nextIndex = (currentIndex + 1) % surfacesUnderTouch.size
+                                            viewModel.selectSurface(surfacesUnderTouch[nextIndex].id)
+                                        } else {
+                                            // Select the first one (topmost in z-order)
+                                            viewModel.selectSurface(surfacesUnderTouch.first().id)
+                                        }
+                                    }
+                                }
+                            }
+                    ) {
+                        // Empty canvas - just for touch detection
+                    }
+                    
+                    // Render SurfaceHandles on top (they will receive touches for handles)
                     uiState.surfaces.forEach { surface ->
                         SurfaceHandles(
                             surface = surface,
@@ -372,6 +442,8 @@ fun MappingScreen(
                     onMoveUp = { id -> viewModel.moveSurfaceUp(id) },
                     onMoveDown = { id -> viewModel.moveSurfaceDown(id) },
                     onToggleBlack = { id -> viewModel.toggleSurfaceBlack(id) },
+                    onOpenContentSettings = { showContentSettings = true },
+                    onCreateTestShapes = { viewModel.createRandomTestShapes(screenW, screenH) },
                     isBlack = uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.isBlack ?: false,
                     hasSurfaces = uiState.surfaces.isNotEmpty(),
                     isPlaying = uiState.isPlaying,
@@ -570,15 +642,27 @@ fun MappingScreen(
                     Spacer(modifier = Modifier.height(24.dp))
                     Text(
                         "Por favor, no cierres la aplicación.\nUna vez finalizado el envío, deberás aceptar la instalación en el Proyector.",
-                        color = Color.White.copy(alpha = 0.7f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
                 }
             }
         }
 
-
+        if (showContentSettings) {
+            uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.let { surface ->
+                SurfaceContentDialog(
+                    surface = surface,
+                    shaderRegistry = viewModel.shaderRegistry,
+                    onDismissRequest = { showContentSettings = false },
+                    onSourceTypeChange = { viewModel.dispatchCommand(MappingCommand.SetSourceType(surface.id, it)) },
+                    onShaderIdChange = { viewModel.dispatchCommand(MappingCommand.SetShaderId(surface.id, it)) },
+                    onParamChange = { name, value -> viewModel.dispatchCommand(MappingCommand.UpdateShaderParameter(surface.id, name, value)) },
+                    onToggleBlack = { viewModel.dispatchCommand(MappingCommand.ToggleBlackMode(surface.id)) },
+                    onMoveUp = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "UP")) },
+                    onMoveDown = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "DOWN")) },
+                    onPickVideo = { openVideoPicker() }
+                )
+            }
+        }
     }
 }
 
@@ -595,6 +679,8 @@ fun MappingControls(
     onMoveUp: (String) -> Unit,
     onMoveDown: (String) -> Unit,
     onToggleBlack: (String) -> Unit,
+    onOpenContentSettings: () -> Unit,
+    onCreateTestShapes: () -> Unit,
     isBlack: Boolean,
     hasSurfaces: Boolean,
     isPlaying: Boolean,
@@ -699,6 +785,14 @@ fun MappingControls(
                     activeColor = Color(0xFFFF9800)
                 )
             }
+            
+            // Test button - creates random shapes with random shaders
+            GlassIconButton(
+                onClick = onCreateTestShapes,
+                icon = Icons.Default.Refresh,
+                active = false,
+                activeColor = Color(0xFFFFEB3B)
+            )
         }
 
         // --- CONTROLES DE SUPERFICIE SELECCIONADA ---
@@ -708,6 +802,12 @@ fun MappingControls(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 GlassIconButton(onClick = onPickVideo, icon = Icons.Default.PlayArrow)
+                GlassIconButton(
+                    onClick = onOpenContentSettings, 
+                    icon = Icons.Default.Settings,
+                    active = true,
+                    activeColor = Color.Magenta
+                )
                 GlassIconButton(
                     onClick = { onToggleBlack(selectedSurfaceId) },
                     icon = Icons.Default.Warning, // Representa modo negro
@@ -949,16 +1049,6 @@ fun SurfaceHandles(
                         }
                     }
             )
-        }
-
-        if (surface.id != selectedSurfaceId) {
-             Canvas(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .pointerInput(surface.id) {
-                        detectTapGestures(onTap = { onSelect() })
-                    }
-            ) { }
         }
 
         // Color especial si estamos "Agarrando" algo
@@ -1260,35 +1350,240 @@ fun CornerHandle(
             .clickable { onClick() }
     )
 }
+@Composable
+fun SurfaceContentDialog(
+    surface: MappingSurface,
+    shaderRegistry: Map<String, List<String>>,
+    onDismissRequest: () -> Unit,
+    onSourceTypeChange: (SourceType) -> Unit,
+    onShaderIdChange: (String) -> Unit,
+    onParamChange: (String, Float) -> Unit,
+    onToggleBlack: () -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onPickVideo: () -> Unit
+) {
+    var isInteracting by remember { mutableStateOf(false) }
+    val animatedAlpha by animateFloatAsState(
+        targetValue = if (isInteracting) 0.1f else 1.0f,
+        animationSpec = tween(durationMillis = 400),
+        label = "DialogAlpha"
+    )
+
+    PremiumDialog(
+        onDismissRequest = onDismissRequest,
+        title = surface.name,
+        alpha = animatedAlpha
+    ) {
+        val scrollState = rememberScrollState()
+        Column(
+            modifier = Modifier
+                .fillMaxHeight(0.85f)
+                .verticalScroll(scrollState),
+            verticalArrangement = Arrangement.spacedBy(20.dp)
+        ) {
+            // Section 1: Visibility & Priority
+            DialogSection(title = "General & Orden") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text("Capa en Negro", color = Color.White, style = MaterialTheme.typography.bodyLarge)
+                        Text("Oculta el contenido visual", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                    }
+                    Switch(
+                        checked = surface.isBlack,
+                        onCheckedChange = { onToggleBlack() },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan)
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Button(
+                        onClick = onMoveUp,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.Cyan)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Subir Capa")
+                    }
+                    Button(
+                        onClick = onMoveDown,
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
+                    ) {
+                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = Color.Cyan)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Bajar Capa")
+                    }
+                }
+            }
+
+            // Section 2: Source Selection
+            DialogSection(title = "Fuente de Contenido") {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    SourceCard(
+                        title = "Video",
+                        icon = Icons.Default.PlayArrow,
+                        isSelected = surface.sourceType == SourceType.VIDEO,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSourceTypeChange(SourceType.VIDEO) }
+                    )
+                    SourceCard(
+                        title = "Shader",
+                        icon = Icons.Default.Settings,
+                        isSelected = surface.sourceType == SourceType.SHADER,
+                        modifier = Modifier.weight(1f),
+                        onClick = { onSourceTypeChange(SourceType.SHADER) }
+                    )
+                }
+
+                if (surface.sourceType == SourceType.VIDEO) {
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Button(
+                        onClick = onPickVideo,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan.copy(alpha = 0.8f))
+                    ) {
+                        Icon(Icons.Default.Folder, contentDescription = null, tint = Color.Black)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Seleccionar Video", color = Color.Black)
+                    }
+                    surface.videoPath?.let {
+                        Text(
+                            "Archivo: ${it.split("/").last()}",
+                            modifier = Modifier.padding(top = 8.dp),
+                            color = Color.Gray,
+                            style = MaterialTheme.typography.labelSmall
+                        )
+                    }
+                }
+            }
+
+            // Section 3: Shader Details
+            if (surface.sourceType == SourceType.SHADER) {
+                DialogSection(title = "Biblioteca de Shaders") {
+                    LazyRow(
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        contentPadding = PaddingValues(bottom = 12.dp)
+                    ) {
+                        items(shaderRegistry.keys.toList()) { id ->
+                            val selected = surface.shaderId == id
+                            Surface(
+                                onClick = { onShaderIdChange(id) },
+                                color = if (selected) Color.Cyan.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
+                                shape = RoundedCornerShape(12.dp),
+                                border = BorderStroke(1.dp, if (selected) Color.Cyan else Color.Transparent)
+                            ) {
+                                Text(
+                                    id, 
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp), 
+                                    color = Color.White, 
+                                    style = MaterialTheme.typography.bodyLarge
+                                )
+                            }
+                        }
+                    }
+
+                    surface.shaderId?.let { shaderId ->
+                        Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
+                        Text("Ajustes Precisos", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium)
+                        shaderRegistry[shaderId]?.forEach { param ->
+                            val value = surface.shaderParameters[param] ?: 0.5f
+                            Column(modifier = Modifier.padding(vertical = 8.dp)) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text(param, color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodySmall)
+                                    Text(String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Slider(
+                                    value = value,
+                                    onValueChange = { 
+                                        isInteracting = true
+                                        onParamChange(param, it) 
+                                    },
+                                    onValueChangeFinished = { isInteracting = false },
+                                    colors = SliderDefaults.colors(
+                                        thumbColor = Color.Cyan,
+                                        activeTrackColor = Color.Cyan,
+                                        inactiveTrackColor = Color.Cyan.copy(alpha = 0.2f)
+                                    ),
+                                    modifier = Modifier.height(40.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+            
+            Button(
+                onClick = onDismissRequest,
+                modifier = Modifier.fillMaxWidth().height(56.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan),
+                shape = RoundedCornerShape(16.dp)
+            ) {
+                Text("Aplicar y Cerrar", color = Color.Black, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
 
 @Composable
-fun PremiumDialog(
-    onDismissRequest: () -> Unit,
+fun DialogSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White.copy(alpha = 0.03f), RoundedCornerShape(16.dp))
+            .padding(16.dp)
+    ) {
+        Text(
+            title.uppercase(), 
+            style = MaterialTheme.typography.labelSmall, 
+            color = Color.Cyan.copy(alpha = 0.6f),
+            letterSpacing = 1.1.sp
+        )
+        Spacer(Modifier.height(16.dp))
+        content()
+    }
+}
+
+@Composable
+fun SourceCard(
     title: String,
-    content: @Composable () -> Unit
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    isSelected: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit
 ) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismissRequest) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            shape = RoundedCornerShape(28.dp),
-            color = Color(0xFF1A1C1E).copy(alpha = 0.95f),
-            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
-            shadowElevation = 24.dp
+    Surface(
+        onClick = onClick,
+        modifier = modifier,
+        color = if (isSelected) Color.Cyan.copy(alpha = 0.15f) else Color.White.copy(alpha = 0.05f),
+        shape = RoundedCornerShape(16.dp),
+        border = BorderStroke(1.dp, if (isSelected) Color.Cyan else Color.Transparent)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(
-                modifier = Modifier.padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp)
-            ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
-                content()
-            }
+            Icon(icon, contentDescription = null, tint = if (isSelected) Color.Cyan else Color.Gray)
+            Text(title, color = if (isSelected) Color.White else Color.Gray, style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -1354,6 +1649,40 @@ fun ProjectItem(
             }
             IconButton(onClick = onDelete) {
                 Icon(Icons.Default.Delete, contentDescription = "Delete", tint = Color.Red.copy(alpha = 0.7f))
+            }
+        }
+    }
+}
+
+@Composable
+fun PremiumDialog(
+    onDismissRequest: () -> Unit,
+    title: String,
+    alpha: Float = 1.0f,
+    content: @Composable () -> Unit
+) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismissRequest) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer(alpha = alpha)
+                .padding(16.dp),
+            shape = RoundedCornerShape(28.dp),
+            color = Color(0xFF1A1C1E).copy(alpha = 0.95f),
+            border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
+            shadowElevation = 24.dp
+        ) {
+            Column(
+                modifier = Modifier.padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp)
+            ) {
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold
+                )
+                content()
             }
         }
     }
