@@ -297,6 +297,24 @@ sealed class MappingCommand {
         }
     }
 
+    data class SetTargetFPS(
+        val fps: Int
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "SET_TARGET_FPS")
+            put("fps", fps)
+        }
+    }
+
+    data class SetGlobalBPM(
+        val bpm: Float
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "SET_GLOBAL_BPM")
+            put("bpm", bpm.toDouble())
+        }
+    }
+
     companion object {
         fun fromJSON(jsonString: String): MappingCommand? {
             return try {
@@ -402,6 +420,8 @@ sealed class MappingCommand {
                         )
                     }
                     "SET_ACTIVE_DECK" -> SetActiveDeck(obj.getInt("deckIndex"))
+                    "SET_TARGET_FPS" -> SetTargetFPS(obj.getInt("fps"))
+                    "SET_GLOBAL_BPM" -> SetGlobalBPM(obj.getDouble("bpm").toFloat())
 
                     "SET_PLAY_STATE" -> SetPlayState(obj.getBoolean("isPlaying"))
                     "CLIENT_HELLO" -> ClientHello(

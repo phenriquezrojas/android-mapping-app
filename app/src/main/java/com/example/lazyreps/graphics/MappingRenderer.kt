@@ -31,6 +31,26 @@ class MappingRenderer(
 
     private var frameCount = 0
 
+    // Performance & Sync
+    // Performance & Sync
+    var targetFPS: Int = 24
+        set(value) {
+            field = value
+            Log.d("MappingRenderer", "DEBUG_FPS: targetFPS updated to $value")
+        }
+    var bpm: Float = 120f
+        set(value) {
+            field = value
+            Log.d("MappingRenderer", "DEBUG_BPM: bpm updated to $value")
+        }
+    private var beatPhase: Float = 0f
+    private var lastFrameTime: Long = System.nanoTime()
+    
+    // Debug Logging
+    private var lastFpsLogTime: Long = System.nanoTime()
+
+
+
     private var program = 0
     private var positionHandle = 0
     private var texCoordHandle = 0
@@ -135,6 +155,8 @@ class MappingRenderer(
     fun updateState(state: MappingState) {
         mappingSurfaces = state.surfaces
         outputMode = state.outputMode
+        targetFPS = state.targetFPS
+        bpm = state.globalBPM
         requestRender?.invoke()
     }
 
@@ -271,6 +293,8 @@ class MappingRenderer(
         shaderResourceMap["MagicRoots"] = R.raw.shader_organic_noise
         shaderResourceMap["FireEnergy"] = R.raw.shader_fire_energy
         shaderResourceMap["LeafStorm"] = R.raw.shader_pulse_wave
+        shaderResourceMap["PulseWave"] = R.raw.shader_pulse_wave
+        shaderResourceMap["BPM_Debug"] = R.raw.shader_bpm_debug
         shaderResourceMap["MysticFlora"] = R.raw.shader_aura_field
         shaderResourceMap["CosmicPollen"] = R.raw.shader_particle_mist
         shaderResourceMap["FriendshipAura"] = R.raw.shader_dissolve_ritual
@@ -330,48 +354,75 @@ class MappingRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        try {
-            // Check current time
-            // val now = SystemClock.elapsedRealtime()
-            // val dt = (now - startTime) / 1000f
+        val startTimeNs = System.nanoTime()
 
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
-            
-            // Render Surfaces
-            val localSurfaces = mappingSurfaces // Snap for thread safety
-            val animates = localSurfaces.any { it.isPlaying }
-            
-            localSurfaces.forEach { surface ->
-                if (surface.isVisible) {
-                    // Decide strategy: Multi-layer (FBO) vs Legacy
-                    // We use multi-layer if enabled, supported, AND at least one slot is defined
-                    if (multiLayerEnabled && fboManager?.isSupported() == true && 
-                        (surface.backgroundsSlot != null || surface.visualsSlot != null || surface.fxSlot != null)) {
-                        drawSurfaceMultiLayer(surface)
-                    } else {
-                        drawSurface(surface)
-                    }
-                }
+        // 1. Update Time & Sync
+        val currentTime = System.nanoTime()
+        val deltaTimeMs = (currentTime - lastFrameTime) / 1000000f
+        lastFrameTime = currentTime
+        
+        // Calculate Beat Phase (0.0 to 1.0)
+        // BPM / 60 = Beats per second.
+        // Time * BPS = Total Beats. Fract(Total Beats) = Phase.
+        val seconds = (SystemClock.elapsedRealtime() - startTime) / 1000f
+        val beatsPerSecond = bpm / 60f
+        beatPhase = (seconds * beatsPerSecond) % 1.0f
+
+        // 2. Clear Screen
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
+
+        // 3. Process Lazy Queue
+        while (deferredQueue.isNotEmpty()) {
+            val (shaderId, resId) = deferredQueue.removeAt(0)
+            loadProceduralShader(shaderId, resId, deferredVertexShader)
+        }
+
+        // 4. Render Surfaces using Composite-then-Warp Pipeline
+        val localSurfaces = mappingSurfaces // Snap for thread safety
+        val animates = localSurfaces.any { it.isPlaying }
+
+        localSurfaces.forEach { surface ->
+            if (surface.isVisible) {
+                drawSurfaceMultiLayer(surface)
             }
-            
-            // Draw Overlays (Selection / Outlines)
-            if (outputMode == "EDIT") {
-                drawOverlays(localSurfaces)
+        }
+        
+        // 5. Draw Overlays (Selection / Outlines)
+        if (outputMode == "EDIT") {
+            drawOverlays(localSurfaces)
+        }
+        
+        if (outputMode == "SHOW" || animates) {
+            requestRender?.invoke()
+        }
+        
+        // 6. FPS Throttle
+        val endTimeNs = System.nanoTime()
+        val timeElapsedMs = (endTimeNs - startTimeNs) / 1000000
+        val targetTimeMs = 1000 / targetFPS
+        val waitTimeMs = targetTimeMs - timeElapsedMs
+        
+        // Log Actual FPS every second
+        frameCount++
+        if (currentTime - lastFpsLogTime >= 1000000000) {
+            val fps = frameCount.toFloat() / ((currentTime - lastFpsLogTime) / 1000000000f)
+            Log.d("MappingRenderer", "PERF_CHECK: Actual FPS: %.1f | Target: %d | Opacity: %.2f".format(fps, targetFPS, 1.0f))
+            lastFpsLogTime = currentTime
+            frameCount = 0
+        }
+        
+        if (waitTimeMs > 0) {
+            try {
+                Thread.sleep(waitTimeMs)
+            } catch (e: InterruptedException) {
+                // Ignore
             }
-            
-            if (outputMode == "SHOW" || animates) {
-                requestRender?.invoke()
-            }
-            
-            // Process deferred shader loading (staggered)
-            processDeferredShaders()
-            
-            val err = GLES20.glGetError()
-            if (err != GLES20.GL_NO_ERROR) {
-                Log.e("MappingRenderer", "GL Error in onDrawFrame: $err")
-            }
-        } catch (t: Throwable) {
-            Log.e("MappingRenderer", "FATAL CRASH in onDrawFrame", t)
+        }
+        
+        val err = GLES20.glGetError()
+        if (err != GLES20.GL_NO_ERROR) {
+            Log.e("MappingRenderer", "GL Error in onDrawFrame: $err")
         }
     }
 
@@ -412,59 +463,57 @@ class MappingRenderer(
     private fun drawSurfaceMultiLayer(surface: MappingSurface) {
         val fboMgr = fboManager ?: return
         
-        // --- Pass 1: Render Layers to FBOs ---
+        // --- Pass 1: Composite Layers to Master FBO (Flat) ---
+        // We use FBO 0 as the "Composition" buffer.
+        // It must be NPOT safe as per Nebula specs (handled by FBOManager).
         
-        // Backgrounds (FBO 0)
-        surface.backgroundsSlot?.let { slot ->
-            renderSlotToFBO(slot, 0, fboMgr, surface)
-        }
+        fboMgr.bindFBO(0)
+        GLES20.glClearColor(0f, 0f, 0f, 0f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
         
-        // Visuals (FBO 1)
-        surface.visualsSlot?.let { slot ->
-            renderSlotToFBO(slot, 1, fboMgr, surface)
-        }
+        // Enable Blending for Composition
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         
-        // FX (FBO 2)
-        surface.fxSlot?.let { slot ->
-            renderSlotToFBO(slot, 2, fboMgr, surface)
-        }
+        // Draw Layers Flat (No Warping Here)
+        // We reuse renderSlotToFBO but we need to ensure it draws to CURRENT framebuffer (which is bound FBO 0)
+        // actually renderSlotToFBO binds its own FBO index. 
+        // OPTIMIZATION: We should modify renderSlotToFBO or create a simpler renderSlotFlat
+        // However, to avoid breaking renderSlotToFBO used elsewhere? NO, renderSlotToFBO was designed for this.
+        // WAIT. renderSlotToFBO takes an fboIndex and BINDS it. 
+        // For "Composite-then-Warp", we want to draw INTO FBO 0 sequentially.
+        
+        // Let's create a helper to draw slot contents to CURRENTLY BOUND buffer.
+        
+        surface.backgroundsSlot?.let { renderSlotFlat(it, surface) }
+        surface.visualsSlot?.let { renderSlotFlat(it, surface) }
+        surface.fxSlot?.let { renderSlotFlat(it, surface) }
+        
+        fboMgr.unbindFBO()
         
         // Change Viewport back to Screen
         GLES20.glViewport(0, 0, screenWidth.toInt(), screenHeight.toInt())
         
-        // --- Pass 2: Composite to Screen (Masked) ---
+        // --- Pass 2: Warp Composition to Screen ---
         prepareStencil(surface)
-        
-        // Enable Blending for composition
-        GLES20.glEnable(GLES20.GL_BLEND)
-        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
         
         GLES20.glColorMask(true, true, true, true)
         GLES20.glDepthMask(true)
         GLES20.glStencilFunc(GLES20.GL_NOTEQUAL, 0, 0xFF)
         GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_KEEP)
         
-        // Draw Layers
-        if (surface.backgroundsSlot != null) {
-            drawFBOTextureToScreen(surface, fboMgr.getTextureId(0))
-        }
-        if (surface.visualsSlot != null) {
-            drawFBOTextureToScreen(surface, fboMgr.getTextureId(1))
-        }
-        if (surface.fxSlot != null) {
-            drawFBOTextureToScreen(surface, fboMgr.getTextureId(2))
-        }
+        // Draw the composed texture (from FBO 0) with Warping
+        drawFBOTextureToScreen(surface, fboMgr.getTextureId(0))
     }
     
-    private fun renderSlotToFBO(slot: EffectSlot, fboIndex: Int, fboMgr: FBOManager, surface: MappingSurface) {
-        fboMgr.bindFBO(fboIndex)
-        GLES20.glClearColor(0f, 0f, 0f, 0f)
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        
+    // Helper to render a slot to the currently bound FBO (Flat, Full Quad)
+    private fun renderSlotFlat(slot: EffectSlot, surface: MappingSurface) {
         val (vBuf, tBuf) = getFullQuadBuffers()
         
+        // Setup opacity
+        val opacity = slot.opacity
+        
         if (slot.sourceType == SourceType.VIDEO) {
-            // Try to use the surface's video texture
             val texId = surfaceTextureIds[surface.id] ?: 0
             if (texId != 0) {
                  GLES20.glUseProgram(program)
@@ -472,8 +521,7 @@ class MappingRenderer(
                  GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
                  GLES20.glUniform1i(textureHandle, 0)
                  GLES20.glUniform1f(blackHandle, 0f)
-                 // Use per-slot opacity
-                 GLES20.glUniform1f(opacityHandle, slot.opacity)
+                 GLES20.glUniform1f(opacityHandle, opacity)
                  
                  GLES20.glEnableVertexAttribArray(positionHandle)
                  GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
@@ -492,8 +540,7 @@ class MappingRenderer(
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imgId)
             GLES20.glUniform1i(imageTextureHandle, 0)
             GLES20.glUniform1f(imageBlackHandle, 0f)
-            // Use per-slot opacity
-            GLES20.glUniform1f(imageOpacityHandle, slot.opacity)
+            GLES20.glUniform1f(imageOpacityHandle, opacity)
             
             GLES20.glEnableVertexAttribArray(imagePositionHandle)
             GLES20.glVertexAttribPointer(imagePositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
@@ -504,6 +551,7 @@ class MappingRenderer(
             GLES20.glDisableVertexAttribArray(imageTexCoordHandle)
         } else if (slot.sourceType == SourceType.SHADER) {
             val shaderId = slot.content
+            // Lazy load check
              if (!shaderPrograms.containsKey(shaderId) && !deferredQueue.any { it.first == shaderId }) {
                 shaderResourceMap[shaderId]?.let { resId -> deferredQueue.add(shaderId to resId) }
             }
@@ -513,8 +561,11 @@ class MappingRenderer(
             val time = (SystemClock.elapsedRealtime() - startTime) / 1000f
             val uTime = getUniLoc(pId, "u_time"); if(uTime!=-1) GLES20.glUniform1f(uTime, time)
             val uRes = getUniLoc(pId, "u_resolution"); if(uRes!=-1) GLES20.glUniform2f(uRes, screenWidth, screenHeight)
-            // Use per-slot opacity
-            val uOp = getUniLoc(pId, "u_opacity"); if(uOp!=-1) GLES20.glUniform1f(uOp, slot.opacity)
+            val uOp = getUniLoc(pId, "u_opacity"); if(uOp!=-1) GLES20.glUniform1f(uOp, opacity)
+            
+            // Sync Pulse Injection
+            val uBPM = getUniLoc(pId, "u_bpm"); if(uBPM!=-1) GLES20.glUniform1f(uBPM, bpm)
+            val uPhase = getUniLoc(pId, "u_BeatPhase"); if(uPhase!=-1) GLES20.glUniform1f(uPhase, beatPhase)
             
             slot.shaderParameters.forEach { (k, v) ->
                 val loc = getUniLoc(pId, k); if (loc != -1) GLES20.glUniform1f(loc, v)
@@ -529,11 +580,10 @@ class MappingRenderer(
                 GLES20.glVertexAttribPointer(texH, 2, GLES20.GL_FLOAT, false, 0, tBuf)
             }
             GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+
             GLES20.glDisableVertexAttribArray(posH)
             if (texH != -1) GLES20.glDisableVertexAttribArray(texH)
         }
-        
-        fboMgr.unbindFBO()
     }
     
     private fun prepareStencil(surface: MappingSurface) {

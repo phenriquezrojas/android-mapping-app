@@ -78,7 +78,12 @@ fun DashboardScreen(
                 onBack = onNavigateBack,
                 decks = uiState.decks,
                 activeIndex = uiState.activeDeckIndex,
-                onDeckSelect = { viewModel.setActiveDeck(it) }
+                onDeckSelect = { viewModel.setActiveDeck(it) },
+
+                targetFPS = uiState.targetFPS,
+                globalBPM = uiState.globalBPM,
+                onFpsChange = { viewModel.setTargetFPS(it) },
+                onBpmChange = { viewModel.setGlobalBPM(it) }
             )
 
             // Grid
@@ -164,8 +169,14 @@ fun DashboardHeader(
     onBack: () -> Unit,
     decks: List<MappingDeck>,
     activeIndex: Int,
-    onDeckSelect: (Int) -> Unit
+    onDeckSelect: (Int) -> Unit,
+    targetFPS: Int,
+    globalBPM: Float,
+    onFpsChange: (Int) -> Unit,
+    onBpmChange: (Float) -> Unit
 ) {
+    var showPerfControls by remember { mutableStateOf(false) }
+
     Surface(
         color = Color.Black.copy(alpha = 0.8f),
         modifier = Modifier.fillMaxWidth(),
@@ -193,12 +204,64 @@ fun DashboardHeader(
                     )
                 }
                 
-                Text(
-                    text = projectName.uppercase(),
-                    color = Color.White.copy(alpha = 0.5f),
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Performance Toggle
+                    IconButton(onClick = { showPerfControls = !showPerfControls }) {
+                        Icon(
+                            Icons.Default.Speed,
+                            contentDescription = "Performance",
+                            tint = if (showPerfControls) Color(0xFF00E5FF) else Color.White.copy(alpha = 0.5f)
+                        )
+                    }
+                    Text(
+                        text = "${targetFPS}FPS | ${globalBPM.toInt()}BPM",
+                        color = Color.White.copy(alpha = 0.5f),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold
+                    )
+                }
+            }
+
+            // Performance Controls (Expandable)
+            if (showPerfControls) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color(0xFF1A1A1A))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    // FPS Control
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("FPS Target: $targetFPS", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.width(100.dp))
+                        Slider(
+                            value = targetFPS.toFloat(),
+                            onValueChange = { onFpsChange(it.toInt()) },
+                            valueRange = 15f..60f,
+                            steps = 45, // 1 step per FPS roughly
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFF00E5FF),
+                                activeTrackColor = Color(0xFF00E5FF)
+                            )
+                        )
+                    }
+                    
+                    // BPM Control
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Global BPM: ${globalBPM.toInt()}", color = Color.Gray, fontSize = 12.sp, modifier = Modifier.width(100.dp))
+                        Slider(
+                            value = globalBPM,
+                            onValueChange = { onBpmChange(it) },
+                            valueRange = 60f..200f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = Color(0xFFFF00FF),
+                                activeTrackColor = Color(0xFFFF00FF)
+                            )
+                        )
+                    }
+                }
+                Divider(color = Color.White.copy(alpha = 0.1f))
             }
 
             // Deck Tabs

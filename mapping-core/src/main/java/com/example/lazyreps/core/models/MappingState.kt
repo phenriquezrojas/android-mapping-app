@@ -14,7 +14,9 @@ data class MappingState(
     val screenHeight: Float = 0f,
     val isFullScreen: Boolean = false,
     val decks: List<MappingDeck> = emptyList(),
-    val activeDeckIndex: Int = 0
+    val activeDeckIndex: Int = 0,
+    val targetFPS: Int = 24,
+    val globalBPM: Float = 120f
 ) {
     fun toJSON(): String {
         val obj = JSONObject().apply {
@@ -125,6 +127,8 @@ data class MappingState(
             }
             put("decks", decksArray)
             put("activeDeckIndex", activeDeckIndex)
+            put("targetFPS", targetFPS)
+            put("globalBPM", globalBPM.toDouble())
         }
         return obj.toString()
     }
@@ -288,8 +292,10 @@ data class MappingState(
                     }
                 }
                 val activeDeckIndex = obj.optInt("activeDeckIndex", 0)
+                val targetFPS = obj.optInt("targetFPS", 24)
+                val globalBPM = obj.optDouble("globalBPM", 120.0).toFloat()
                 
-                MappingState(mode, surfaces, screenWidth, screenHeight, isFullScreen, decks, activeDeckIndex)
+                MappingState(mode, surfaces, screenWidth, screenHeight, isFullScreen, decks, activeDeckIndex, targetFPS, globalBPM)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null

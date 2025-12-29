@@ -5,6 +5,8 @@ uniform float u_opacity;
 uniform float u_speed;
 uniform float u_scale;
 uniform float u_energy;
+uniform float u_bpm;
+uniform float u_BeatPhase;
 
 vec3 palette(float t) {
     vec3 a = vec3(0.5, 0.5, 0.5);
@@ -18,7 +20,13 @@ void main() {
     float t = u_time * (u_speed + 0.5);
     vec2 uv = (v_TexCoord - 0.5) * (1.0 + u_scale * 8.0);
     float dist = length(uv);
-    float angle = dist * (2.0 + u_energy) - t;
+    
+    // BPM Pulse Logic
+    // u_BeatPhase goes 0.0 -> 1.0 every beat. 
+    // We create a "kick" effect by peaking at 0.0
+    float kick = pow(1.0 - u_BeatPhase, 4.0); // Sharp decay
+    
+    float angle = dist * (2.0 + u_energy + kick * 5.0) - t;
     float s = sin(angle);
     float c = cos(angle);
     uv = mat2(c, -s, s, c) * uv;

@@ -88,7 +88,11 @@ data class MappingUiState(
     val shaderPresets: List<ShaderPreset> = emptyList(), // Phase 2: Presets for current shader
     val decks: List<MappingDeck> = emptyList(), // Phase 3: Dashboard Grid
     val activeDeckIndex: Int = 0,
-    val historyStack: List<List<MappingSurface>> = emptyList()
+
+    val historyStack: List<List<MappingSurface>> = emptyList(),
+    // Performance & Sync
+    val targetFPS: Int = 24,
+    val globalBPM: Float = 120f
 )
 
 enum class ExecutionMode {
@@ -138,9 +142,49 @@ class MappingViewModel @Inject constructor(
         "StarField" to listOf("u_speed", "u_count", "u_brightness"),
         "Kaleidoscope" to listOf("u_sides", "u_speed", "u_zoom"),
         "WaterRipples" to listOf("u_speed", "u_frequency", "u_amplitude"),
+        "BPM_Debug" to listOf("u_bpm", "u_BeatPhase"),
+        "PulseWave" to listOf("u_speed", "u_scale", "u_energy"),
         "AuroraFlow" to listOf("u_speed", "u_intensity", "u_flow"),
         "GeometricPulse" to listOf("u_speed", "u_size", "u_repetition")
+
     )
+    
+    // Performance Functions
+    fun setTargetFPS(fps: Int) {
+        Log.d("MappingVM", "setTargetFPS: $fps (Mode: ${_uiState.value.executionMode})")
+        _uiState.update { it.copy(targetFPS = fps) }
+        
+        if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetTargetFPS(fps))
+        } else {
+            viewModelScope.launch {
+                withContext(Dispatchers.Main) {
+                    if(::renderer.isInitialized) {
+                        renderer.targetFPS = fps
+                        Log.d("MappingVM", "Renderer targetFPS updated to $fps")
+                    }
+                }
+            }
+        }
+    }
+
+    fun setGlobalBPM(bpm: Float) {
+        Log.d("MappingVM", "setGlobalBPM: $bpm (Mode: ${_uiState.value.executionMode})")
+        _uiState.update { it.copy(globalBPM = bpm) }
+        
+        if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetGlobalBPM(bpm))
+        } else {
+            viewModelScope.launch {
+                withContext(Dispatchers.Main) {
+                    if(::renderer.isInitialized) {
+                        renderer.bpm = bpm
+                        Log.d("MappingVM", "Renderer BPM updated to $bpm")
+                    }
+                }
+            }
+        }
+    }
 
     fun logBreadcrumb(step: String) {
         try {
@@ -422,8 +466,13 @@ class MappingViewModel @Inject constructor(
                 surfaces = ui.surfaces,
                 screenWidth = ui.screenWidth,
                 screenHeight = ui.screenHeight,
-                isFullScreen = ui.isFullScreen
+                isFullScreen = ui.isFullScreen,
+                targetFPS = ui.targetFPS,
+                globalBPM = ui.globalBPM
             ))
+            // Also push performance properties directly (Surgical Sync)
+            renderer.targetFPS = ui.targetFPS
+            renderer.bpm = ui.globalBPM
         }
     }
 
@@ -659,7 +708,9 @@ class MappingViewModel @Inject constructor(
                 surfaces = _uiState.value.surfaces,
                 screenWidth = _uiState.value.screenWidth,
                 screenHeight = _uiState.value.screenHeight,
-                isFullScreen = _uiState.value.isFullScreen
+                isFullScreen = _uiState.value.isFullScreen,
+                targetFPS = _uiState.value.targetFPS,
+                globalBPM = _uiState.value.globalBPM
             )
             networkManager.sendState(state)
         }
@@ -1392,7 +1443,9 @@ class MappingViewModel @Inject constructor(
                         surfaces = _uiState.value.surfaces,
                         screenWidth = _uiState.value.screenWidth,
                         screenHeight = _uiState.value.screenHeight,
-                        isFullScreen = _uiState.value.isFullScreen
+                        isFullScreen = _uiState.value.isFullScreen,
+                        targetFPS = _uiState.value.targetFPS,
+                        globalBPM = _uiState.value.globalBPM
                     )
                     networkManager.sendState(currentState)
                 }
@@ -1530,6 +1583,12 @@ class MappingViewModel @Inject constructor(
             is MappingCommand.SetActiveDeck -> {
                 setActiveDeck(command.deckIndex, fromRemote = true)
             }
+            is MappingCommand.SetTargetFPS -> {
+                setTargetFPS(command.fps)
+            }
+            is MappingCommand.SetGlobalBPM -> {
+                setGlobalBPM(command.bpm)
+            }
             else -> {
                 Log.d("MappingViewModel", "Unhandled command: ${command.toJSONObject()}")
             }
@@ -1557,10 +1616,14 @@ class MappingViewModel @Inject constructor(
                     isProjectionMode = state.outputMode == "SHOW",
                     screenWidth = state.screenWidth,
                     screenHeight = state.screenHeight,
-                    isFullScreen = state.isFullScreen
+                    isFullScreen = state.isFullScreen,
+                    targetFPS = state.targetFPS,
+                    globalBPM = state.globalBPM
                 )
             }
             if (::renderer.isInitialized) {
+                renderer.targetFPS = state.targetFPS
+                renderer.bpm = state.globalBPM
                 renderer.updateState(state)
             }
             // setup players for all surfaces (Must be on Main thread)
@@ -1595,7 +1658,9 @@ class MappingViewModel @Inject constructor(
                     surfaces = _uiState.value.surfaces,
                     screenWidth = _uiState.value.screenWidth,
                     screenHeight = _uiState.value.screenHeight,
-                    isFullScreen = _uiState.value.isFullScreen
+                    isFullScreen = _uiState.value.isFullScreen,
+                    targetFPS = _uiState.value.targetFPS,
+                    globalBPM = _uiState.value.globalBPM
                 )
                 networkManager.sendState(state)
             }
@@ -1629,7 +1694,9 @@ class MappingViewModel @Inject constructor(
              surfaces = ui.surfaces,
              screenWidth = ui.screenWidth,
              screenHeight = ui.screenHeight,
-             isFullScreen = ui.isFullScreen
+             isFullScreen = ui.isFullScreen,
+             targetFPS = ui.targetFPS,
+             globalBPM = ui.globalBPM
         )
         return state.toJSON()
     }
@@ -2101,7 +2168,9 @@ class MappingViewModel @Inject constructor(
                 screenHeight = ui.screenHeight,
                 isFullScreen = ui.isFullScreen,
                 decks = ui.decks,
-                activeDeckIndex = ui.activeDeckIndex
+                activeDeckIndex = ui.activeDeckIndex,
+                targetFPS = ui.targetFPS,
+                globalBPM = ui.globalBPM
             )
             val prefs = context.getSharedPreferences("mapping_prefs", Context.MODE_PRIVATE)
             prefs.edit().putString("current_full_state_json", state.toJSON()).apply()
@@ -2119,7 +2188,12 @@ class MappingViewModel @Inject constructor(
             val state = if (fullJson != null) {
                 MappingState.fromJSON(fullJson)
             } else if (oldJson != null) {
-                MappingState(surfaces = deserializeSurfaces(oldJson))
+                val ui = _uiState.value
+                MappingState(
+                    surfaces = deserializeSurfaces(oldJson),
+                    targetFPS = ui.targetFPS,
+                    globalBPM = ui.globalBPM
+                )
             } else null
 
             val lastDir = prefs.getString("last_visited_dir", null)
@@ -2350,7 +2424,12 @@ class MappingViewModel @Inject constructor(
     }
 
     private fun serializeSurfaces(surfaces: List<MappingSurface>): String {
-        return MappingState(surfaces = surfaces).toJSON()
+        val ui = _uiState.value
+        return MappingState(
+            surfaces = surfaces,
+            targetFPS = ui.targetFPS,
+            globalBPM = ui.globalBPM
+        ).toJSON()
     }
 
     private fun deserializeSurfaces(json: String): List<MappingSurface> {
