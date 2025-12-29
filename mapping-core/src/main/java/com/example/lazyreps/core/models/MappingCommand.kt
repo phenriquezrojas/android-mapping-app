@@ -83,13 +83,15 @@ sealed class MappingCommand {
     data class AddSurface(
         val shapeType: String,
         val screenWidth: Float,
-        val screenHeight: Float
+        val screenHeight: Float,
+        val id: String? = null
     ) : MappingCommand() {
         override fun toJSONObject() = JSONObject().apply {
             put("type", "ADD_SURFACE")
             put("shapeType", shapeType)
             put("screenWidth", screenWidth.toDouble())
             put("screenHeight", screenHeight.toDouble())
+            if (id != null) put("id", id)
         }
     }
 
@@ -315,7 +317,8 @@ sealed class MappingCommand {
                     "ADD_SURFACE" -> AddSurface(
                         obj.getString("shapeType"),
                         obj.getDouble("screenWidth").toFloat(),
-                        obj.getDouble("screenHeight").toFloat()
+                        obj.getDouble("screenHeight").toFloat(),
+                        obj.optString("id", null)
                     )
                     "UPDATE_ALL_CORNERS" -> {
                         val arr = obj.getJSONArray("corners")

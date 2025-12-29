@@ -88,9 +88,15 @@ fun MappingScreen(
     // Mantener la pantalla encendida durante la ejecución de la app
     LocalView.current.keepScreenOn = true
     
-    val permissionState = com.google.accompanist.permissions.rememberPermissionState(
-        android.Manifest.permission.READ_EXTERNAL_STORAGE
+    val permissionState = com.google.accompanist.permissions.rememberMultiplePermissionsState(
+        listOf(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
     )
+    
+    // Check if ALL permissions are granted
+    val allPermissionsGranted = permissionState.allPermissionsGranted
 
 
 
@@ -103,11 +109,11 @@ fun MappingScreen(
 
     // Función segura para lanzar video picker (Internal)
     val openFilePicker = { mode: SourceType ->
-        if (permissionState.status.isGranted) {
+        if (allPermissionsGranted) {
              filePickerMode = mode
              showFilePicker = true
         } else {
-             permissionState.launchPermissionRequest()
+             permissionState.launchMultiplePermissionRequest()
         }
     }
 
@@ -135,6 +141,13 @@ fun MappingScreen(
         viewModel.initRenderer(renderer)
         onDispose {
             viewModel.releaseRenderer()
+        }
+    }
+
+    // Auto-solicitar permisos al inicio para asegurar que los logs se puedan escribir
+    LaunchedEffect(Unit) {
+        if (!allPermissionsGranted) {
+            permissionState.launchMultiplePermissionRequest()
         }
     }
 
@@ -227,7 +240,7 @@ fun MappingScreen(
                         modifier = Modifier.fillMaxWidth(),
                         textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
                         colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary, // Fixed color ref
+                            focusedBorderColor = MaterialTheme.colorScheme.primary,
                             unfocusedBorderColor = Color.White.copy(alpha = 0.3f)
                         )
                     )
@@ -253,7 +266,42 @@ fun MappingScreen(
                     }
                 }
 
+                Divider(color = Color.White.copy(alpha = 0.1f))
 
+                Text(
+                    "Diagnostics:",
+                    color = Color.Gray,
+                    style = MaterialTheme.typography.labelMedium
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    OutlinedButton(
+                        onClick = { viewModel.viewLastCrash() },
+                        modifier = Modifier.weight(1f),
+                        border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("View Last Crash", color = Color.Red.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
+                    OutlinedButton(
+                        onClick = { viewModel.viewStartupTrail() },
+                        modifier = Modifier.weight(1f),
+                        border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.5f)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("View Startup Trail", color = Color.Cyan.copy(alpha = 0.8f), fontSize = 10.sp)
+                    }
+                }
+                OutlinedButton(
+                    onClick = { viewModel.exportLogsToDownload() },
+                    modifier = Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, Color.Green.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Text("Export Forensic Logs to Downloads", color = Color.Green.copy(alpha = 0.8f))
+                }
             }
         }
     }
@@ -350,6 +398,7 @@ fun MappingScreen(
                             // Importante: Vincular los callbacks para renderizado bajo demanda
                             renderer.onFrameAvailable = { requestRender() }
                             renderer.requestRender = { requestRender() }
+                            renderer.logBreadcrumb = { viewModel.logBreadcrumb(it) }
                         }
                     },
                     modifier = Modifier.fillMaxSize()
@@ -460,9 +509,10 @@ fun MappingScreen(
                     isConnected = uiState.connectionStatus,
                     onOpenRoleSettings = { showRoleDialog = true },
                     onRetryDiscovery = { viewModel.startDiscovery() },
-                    isFullScreen = uiState.isFullScreen,
                     onNavigateToDashboard = onNavigateToDashboard,
+                    isFullScreen = uiState.isFullScreen,
                     onToggleFullScreen = { viewModel.toggleFullScreen(it) },
+                    onUndo = { viewModel.undo() },
                     appVersion = uiState.appVersion,
                     remoteAppVersion = uiState.remoteAppVersion
                 )
@@ -729,9 +779,10 @@ fun MappingControls(
     isConnected: com.example.lazyreps.ui.screens.mapping.ConnectionStatus,
     onOpenRoleSettings: () -> Unit,
     onRetryDiscovery: () -> Unit,
-    isFullScreen: Boolean,
     onNavigateToDashboard: () -> Unit,
+    isFullScreen: Boolean,
     onToggleFullScreen: (Boolean) -> Unit,
+    onUndo: () -> Unit,
     appVersion: String,
     remoteAppVersion: String? = null
 ) {
@@ -834,6 +885,14 @@ fun MappingControls(
                 icon = Icons.Default.Refresh,
                 active = false,
                 activeColor = Color(0xFFFFEB3B)
+            )
+
+            // BOTÓN DESHACER (UNDO)
+            GlassIconButton(
+                onClick = onUndo,
+                icon = Icons.Default.Refresh,
+                active = false,
+                activeColor = Color.White
             )
         }
 

@@ -12,6 +12,7 @@ import com.example.lazyreps.core.models.MappingSurface
 import com.example.lazyreps.core.models.MappingState
 import com.example.lazyreps.core.models.SourceType
 import android.os.SystemClock
+import android.util.Log
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -25,6 +26,9 @@ class MappingRenderer(
     var onFrameAvailable: (() -> Unit)? = null
     var onScreenSizeChanged: ((width: Int, height: Int) -> Unit)? = null
     var requestRender: (() -> Unit)? = null
+    var logBreadcrumb: ((String) -> Unit)? = null
+
+    private var frameCount = 0
 
     private var program = 0
     private var positionHandle = 0
@@ -40,6 +44,11 @@ class MappingRenderer(
     private var imageTextureHandle = 0
     private var imageBlackHandle = 0
     private var imageOpacityHandle = 0
+    
+    // Mask Program for Stencil Pass
+    private var maskProgram = 0
+    private var maskPositionHandle = 0
+    private var maskColorHandle = 0
     
     // Shader Programs and caches
     private val shaderPrograms = mutableMapOf<String, Int>()
@@ -70,22 +79,30 @@ class MappingRenderer(
     }
 
     fun getSurfaceForId(id: String, onSurfaceCreated: (Surface) -> Unit) {
+        Log.d("MappingRenderer", "getSurfaceForId requested for $id")
         synchronized(surfacesLock) {
             val s = surfaces[id]
             if (s != null) {
+                Log.d("MappingRenderer", "Surface for $id already exists, triggering immediate callback. Valid: ${s.isValid}")
                 onSurfaceCreated(s)
             } else {
+                Log.d("MappingRenderer", "Surface for $id does not exist, adding to pending callbacks")
                 pendingSurfaceCallbacks.getOrPut(id) { mutableListOf() }.add(onSurfaceCreated)
             }
         }
     }
 
     fun clearSurfaces() {
+        Log.d("MappingRenderer", "clearSurfaces called")
         synchronized(surfacesLock) {
-            surfaceTextures.values.forEach { it.release() }
+            surfaceTextures.values.forEach { 
+                Log.d("MappingRenderer", "Releasing SurfaceTexture for some ID")
+                it.release() 
+            }
             surfaceTextures.clear()
             surfaces.clear()
             surfaceTextureIds.values.forEach { id ->
+                Log.d("MappingRenderer", "Deleting texture $id")
                 GLES20.glDeleteTextures(1, intArrayOf(id), 0)
             }
             surfaceTextureIds.clear()
@@ -93,7 +110,7 @@ class MappingRenderer(
                 GLES20.glDeleteTextures(1, intArrayOf(id), 0)
             }
             imageTextures.clear()
-            pendingSurfaceCallbacks.clear()
+            // pendingSurfaceCallbacks.clear() // REMOVED: Keep pending callbacks across GL context resets
         }
     }
 
@@ -108,7 +125,7 @@ class MappingRenderer(
         }
     }
 
-    private var outputMode = "SHOW"
+    private var outputMode = "EDIT"
 
     fun updateState(state: MappingState) {
         mappingSurfaces = state.surfaces
@@ -117,6 +134,8 @@ class MappingRenderer(
     }
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
+        try {
+            Log.d("MappingRenderer", "onSurfaceCreated called")
         clearSurfaces()
         startTime = SystemClock.elapsedRealtime()
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -141,29 +160,12 @@ class MappingRenderer(
             GLES20.glLinkProgram(this)
         }
         
-        // Procedural Shaders (Magic Forest EDM Set)
-        loadProceduralShader("MagicRoots", R.raw.shader_organic_noise, vertexShader)
-        loadProceduralShader("FireEnergy", R.raw.shader_fire_energy, vertexShader)
-        loadProceduralShader("LeafStorm", R.raw.shader_pulse_wave, vertexShader)
-        loadProceduralShader("MysticFlora", R.raw.shader_aura_field, vertexShader)
-        loadProceduralShader("CosmicPollen", R.raw.shader_particle_mist, vertexShader)
-        loadProceduralShader("FriendshipAura", R.raw.shader_dissolve_ritual, vertexShader)
-        loadProceduralShader("Fireworks", R.raw.shader_color_wash, vertexShader)
-        loadProceduralShader("AncientPine", R.raw.shader_ancient_pine, vertexShader)
-        loadProceduralShader("WatcherEyes", R.raw.shader_watcher_eyes, vertexShader)
-        loadProceduralShader("MysticLiquid", R.raw.shader_mystic_liquid, vertexShader)
+        // Procedural Shaders DEFERRED to avoid startup crash on limited hardware
+        // We will load them staggered in subsequent frames
+        Log.d("MappingRenderer", "onSurfaceCreated: Core programs init. Procedural shaders pending.")
         
-        // Phase 2 Shaders
-        loadProceduralShader("PlasmaWaves", R.raw.plasma_waves, vertexShader)
-        loadProceduralShader("VoronoiCells", R.raw.voronoi_cells, vertexShader)
-        loadProceduralShader("FractalZoom", R.raw.fractal_zoom, vertexShader)
-        loadProceduralShader("LiquidMetal", R.raw.liquid_metal, vertexShader)
-        loadProceduralShader("NeonGrid", R.raw.neon_grid, vertexShader)
-        loadProceduralShader("StarField", R.raw.star_field, vertexShader)
-        loadProceduralShader("Kaleidoscope", R.raw.kaleidoscope, vertexShader)
-        loadProceduralShader("WaterRipples", R.raw.water_ripples, vertexShader)
-        loadProceduralShader("AuroraFlow", R.raw.aurora_flow, vertexShader)
-        loadProceduralShader("GeometricPulse", R.raw.geometric_pulse, vertexShader)
+        // Phase 2 Shaders deferred
+        deferredShaderInit(vertexShader)
 
         uniformLocations.clear()
         attributeLocations.clear()
@@ -187,7 +189,38 @@ class MappingRenderer(
         imageBlackHandle = getUniLoc(imageProgram, "u_IsBlack")
         imageOpacityHandle = getUniLoc(imageProgram, "u_Opacity")
         
+        // Initialize Mask Program
+        val simpleVertexShader = loadShader(GLES20.GL_VERTEX_SHADER, readShader(R.raw.simple_vertex_shader))
+        val simpleFragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, readShader(R.raw.simple_fragment_shader))
+        maskProgram = GLES20.glCreateProgram().apply {
+            GLES20.glAttachShader(this, simpleVertexShader)
+            GLES20.glAttachShader(this, simpleFragmentShader)
+            GLES20.glLinkProgram(this)
+        }
+        maskPositionHandle = GLES20.glGetAttribLocation(maskProgram, "a_Position")
+        maskColorHandle = GLES20.glGetUniformLocation(maskProgram, "u_Color")
+        
+        // Final Link Check
+        checkProgramLink(program, "Main Program")
+        checkProgramLink(imageProgram, "Image Program")
+        checkProgramLink(maskProgram, "Mask Program")
+        
+        Log.d("MappingRenderer", "onSurfaceCreated: Core programs initialized and linked.")
         initOverlayProgram()
+        } catch (t: Throwable) {
+            Log.e("MappingRenderer", "FATAL CRASH in onSurfaceCreated", t)
+        }
+    }
+
+    private fun checkProgramLink(prog: Int, name: String) {
+        val linkStatus = IntArray(1)
+        GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, linkStatus, 0)
+        if (linkStatus[0] == 0) {
+            val infoLog = GLES20.glGetProgramInfoLog(prog)
+            Log.e("MappingRenderer", "FATAL: Could not link $name: $infoLog")
+        } else {
+            Log.d("MappingRenderer", "$name linked successfully")
+        }
     }
 
     private fun getUniLoc(prog: Int, name: String): Int {
@@ -201,13 +234,75 @@ class MappingRenderer(
     }
 
     private fun loadProceduralShader(name: String, resId: Int, vertexShader: Int) {
-        val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, readShader(resId))
-        val p = GLES20.glCreateProgram().apply {
-            GLES20.glAttachShader(this, vertexShader)
-            GLES20.glAttachShader(this, fragmentShader)
-            GLES20.glLinkProgram(this)
+        try {
+            val code = readShader(resId)
+            val fragmentShader = loadShader(GLES20.GL_FRAGMENT_SHADER, code)
+            if (fragmentShader == 0) {
+                Log.e("MappingRenderer", "Failed to compile shader for $name")
+                return
+            }
+            val p = GLES20.glCreateProgram().apply {
+                GLES20.glAttachShader(this, vertexShader)
+                GLES20.glAttachShader(this, fragmentShader)
+                GLES20.glLinkProgram(this)
+            }
+            checkProgramLink(p, "Procedural Shader: $name")
+            shaderPrograms[name] = p
+        } catch (t: Throwable) {
+            Log.e("MappingRenderer", "Error loading procedural shader $name", t)
         }
-        shaderPrograms[name] = p
+    }
+
+    private val deferredQueue = mutableListOf<Pair<String, Int>>()
+    private val shaderResourceMap = mutableMapOf<String, Int>()
+    private var deferredVertexShader: Int = 0
+    private var lastShaderLoadTime = 0L
+
+    private fun deferredShaderInit(vertexShader: Int) {
+        deferredVertexShader = vertexShader
+        deferredQueue.clear()
+        
+        // Mapeamos los recursos pero NO los cargamos automáticamente
+        shaderResourceMap["MagicRoots"] = R.raw.shader_organic_noise
+        shaderResourceMap["FireEnergy"] = R.raw.shader_fire_energy
+        shaderResourceMap["LeafStorm"] = R.raw.shader_pulse_wave
+        shaderResourceMap["MysticFlora"] = R.raw.shader_aura_field
+        shaderResourceMap["CosmicPollen"] = R.raw.shader_particle_mist
+        shaderResourceMap["FriendshipAura"] = R.raw.shader_dissolve_ritual
+        shaderResourceMap["Fireworks"] = R.raw.shader_color_wash
+        shaderResourceMap["AncientPine"] = R.raw.shader_ancient_pine
+        shaderResourceMap["WatcherEyes"] = R.raw.shader_watcher_eyes
+        shaderResourceMap["MysticLiquid"] = R.raw.shader_mystic_liquid
+        shaderResourceMap["PlasmaWaves"] = R.raw.plasma_waves
+        shaderResourceMap["VoronoiCells"] = R.raw.voronoi_cells
+        shaderResourceMap["FractalZoom"] = R.raw.fractal_zoom
+        shaderResourceMap["LiquidMetal"] = R.raw.liquid_metal
+        shaderResourceMap["NeonGrid"] = R.raw.neon_grid
+        shaderResourceMap["StarField"] = R.raw.star_field
+        shaderResourceMap["Kaleidoscope"] = R.raw.kaleidoscope
+        shaderResourceMap["WaterRipples"] = R.raw.water_ripples
+        shaderResourceMap["AuroraFlow"] = R.raw.aurora_flow
+        shaderResourceMap["GeometricPulse"] = R.raw.geometric_pulse
+        
+        Log.d("MappingRenderer", "Shader resource map initialized with ${shaderResourceMap.size} shaders. Lazy loading enabled.")
+    }
+
+    private fun processDeferredShaders() {
+        if (deferredQueue.isEmpty() || deferredVertexShader == 0) return
+        
+        val now = SystemClock.elapsedRealtime()
+        if (now - lastShaderLoadTime < 1000) return // Cargar máximo uno por segundo para no saturar la GPU
+
+        val (name, resId) = deferredQueue.removeAt(0)
+        Log.d("MappingRenderer", "Lazy dynamic compiling: $name (Left in queue: ${deferredQueue.size})")
+        
+        logBreadcrumb?.invoke("Compiling shader (Lazy): $name")
+        
+        loadProceduralShader(name, resId, deferredVertexShader)
+        lastShaderLoadTime = now
+
+        // Request another render if we are still loading, to keep the process going
+        requestRender?.invoke()
     }
 
     override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
@@ -218,9 +313,18 @@ class MappingRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
+        if (frameCount < 5) {
+            frameCount++
+            logBreadcrumb?.invoke("onDrawFrame #$frameCount")
+        }
+        try {
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
         
         val surfacesToDraw = mappingSurfaces
+        if (surfacesToDraw.isEmpty()) {
+            // Log.v("MappingRenderer", "Nothing to draw")
+        }
+        
         var animates = false
         surfacesToDraw.forEach { surface ->
             if (surface.isVisible) {
@@ -236,7 +340,18 @@ class MappingRenderer(
         if (outputMode == "SHOW" || animates) {
             requestRender?.invoke()
         }
+        
+        // Process deferred shader loading (staggered)
+        processDeferredShaders()
+        
+        val err = GLES20.glGetError()
+        if (err != GLES20.GL_NO_ERROR) {
+            Log.e("MappingRenderer", "GL Error in onDrawFrame: $err")
+        }
+    } catch (t: Throwable) {
+        Log.e("MappingRenderer", "FATAL CRASH in onDrawFrame", t)
     }
+}
 
     private fun drawSurface(surface: MappingSurface) {
         val texId = synchronized(surfacesLock) {
@@ -264,15 +379,26 @@ class MappingRenderer(
                 surfaceTextures[surface.id] = tex
                 surfaces[surface.id] = s
                 
-                pendingSurfaceCallbacks.remove(surface.id)?.forEach { it(s) }
+                Log.d("MappingRenderer", "New Surface created for ${surface.id}. TextureID=$texId. Valid=${s.isValid}")
+                
+                pendingSurfaceCallbacks.remove(surface.id)?.forEach { 
+                    Log.d("MappingRenderer", "Executing pending callback for ${surface.id}")
+                    it(s) 
+                }
             }
             surfaceTextures[surface.id]!!
         }
         if (surface.sourceType == SourceType.VIDEO) {
             try {
                 st.updateTexImage()
+                // Forensic Log: Successfully updated image
+                // Log.v("MappingRenderer", "updateTexImage success for ${surface.id}")
             } catch (e: Exception) {
-                // Surface might not be ready yet
+                Log.e("MappingRenderer", "Error updateTexImage for ${surface.id}: ${e.message}")
+                // Si falla, el surface podría estar invalidado
+                if (synchronized(surfacesLock) { surfaces[surface.id]?.isValid == false }) {
+                    Log.e("MappingRenderer", "Surface for ${surface.id} is INVALID")
+                }
             }
         } else if (surface.sourceType == SourceType.IMAGE) {
             // Check if image texture is loaded
@@ -322,14 +448,14 @@ class MappingRenderer(
         GLES20.glStencilOpSeparate(GLES20.GL_FRONT, GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_INCR_WRAP)
         GLES20.glStencilOpSeparate(GLES20.GL_BACK, GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_DECR_WRAP)
         
-        // Draw geometry to stencil buffer
-        val maskProg = if (surface.sourceType == SourceType.VIDEO) program else (shaderPrograms[surface.shaderId] ?: program)
-        GLES20.glUseProgram(maskProg)
-        val maskPos = getAttrLoc(maskProg, "a_Position")
-        GLES20.glEnableVertexAttribArray(maskPos)
-        GLES20.glVertexAttribPointer(maskPos, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+        // Draw geometry to stencil buffer using the dedicated mask shader
+        // This ensures the stencil is filled correctly even if content textures are black/uninitialized
+        GLES20.glUseProgram(maskProgram)
+        GLES20.glUniform4f(maskColorHandle, 1.0f, 1.0f, 1.0f, 1.0f)
+        GLES20.glEnableVertexAttribArray(maskPositionHandle)
+        GLES20.glVertexAttribPointer(maskPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
         GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
-        GLES20.glDisableVertexAttribArray(maskPos)
+        GLES20.glDisableVertexAttribArray(maskPositionHandle)
         
         // PASS 2: Render content where stencil != 0 (non-zero winding)
         GLES20.glColorMask(true, true, true, true)
@@ -354,13 +480,26 @@ class MappingRenderer(
             GLES20.glUniform1f(imageBlackHandle, if (surface.isBlack) 1.0f else 0.0f)
             GLES20.glUniform1f(imageOpacityHandle, surface.opacity)
         } else {
-            val pId = shaderPrograms[surface.shaderId] ?: program
+            val shaderId = surface.shaderId ?: "MagicRoots"
+            
+            // Check if shader needs lazy loading
+            if (!shaderPrograms.containsKey(shaderId) && !deferredQueue.any { it.first == shaderId }) {
+                shaderResourceMap[shaderId]?.let { resId ->
+                    deferredQueue.add(shaderId to resId)
+                    logBreadcrumb?.invoke("Lazy queueing shader: $shaderId")
+                }
+            }
+
+            val pId = shaderPrograms[shaderId] ?: program
             GLES20.glUseProgram(pId)
             
             // Global Uniforms optimizados
             val time = (SystemClock.elapsedRealtime() - startTime) / 1000f
             GLES20.glUniform1f(getUniLoc(pId, "u_time"), time)
-            GLES20.glUniform1f(getUniLoc(pId, "u_opacity"), surface.opacity)
+            
+            // Si la superficie está en modo negro (eye button), forzamos opacidad 0
+            val effectiveOpacity = if (surface.isBlack) 0.0f else surface.opacity
+            GLES20.glUniform1f(getUniLoc(pId, "u_opacity"), effectiveOpacity)
             
             val resLoc = getUniLoc(pId, "u_resolution")
             if (resLoc != -1) {
@@ -396,7 +535,6 @@ class MappingRenderer(
                     if (loc != -1) GLES20.glUniform1f(loc, value)
                 }
             }
-            
             if (pId == program) {
                 GLES20.glUniform1f(blackHandle, if (surface.isBlack) 1.0f else 0.0f)
                 GLES20.glUniform1f(opacityHandle, surface.opacity)
@@ -459,10 +597,20 @@ class MappingRenderer(
     }
 
     private fun loadShader(type: Int, shaderCode: String): Int {
-        return GLES20.glCreateShader(type).also { shader ->
-            GLES20.glShaderSource(shader, shaderCode)
-            GLES20.glCompileShader(shader)
+        val shader = GLES20.glCreateShader(type)
+        GLES20.glShaderSource(shader, shaderCode)
+        GLES20.glCompileShader(shader)
+        
+        val compiled = IntArray(1)
+        GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, compiled, 0)
+        if (compiled[0] == 0) {
+            val infoLog = GLES20.glGetShaderInfoLog(shader)
+            val typeStr = if (type == GLES20.GL_VERTEX_SHADER) "VERTEX" else "FRAGMENT"
+            Log.e("MappingRenderer", "Could not compile $typeStr shader: $infoLog")
+            GLES20.glDeleteShader(shader)
+            return 0
         }
+        return shader
     }
 
     private fun readShader(resourceId: Int): String {

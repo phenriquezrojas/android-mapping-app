@@ -20,7 +20,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.lazyreps.ui.screens.mapping.MappingViewModel
 import com.example.lazyreps.core.models.*
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
     viewModel: MappingViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
@@ -28,6 +32,39 @@ fun DashboardScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val activeDeck = uiState.decks.getOrNull(uiState.activeDeckIndex) ?: MappingDeck(name = "Default")
+    
+    var showQuickEdit by remember { mutableStateOf<Pair<String, Int>?>(null) } // surfaceId, slotIndex
+    var showShaderPicker by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    
+    // File Pickers for Dashboard
+    val videoPickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { selectedUri ->
+            showQuickEdit?.let { (surfaceId, slotIndex) ->
+                viewModel.updateClipInSlot(surfaceId, slotIndex, MappingClip(
+                    name = selectedUri.lastPathSegment ?: "Video",
+                    sourceType = SourceType.VIDEO,
+                    path = selectedUri.toString()
+                ))
+            }
+        }
+        showQuickEdit = null
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        uri?.let { selectedUri ->
+            showQuickEdit?.let { (surfaceId, slotIndex) ->
+                viewModel.updateClipInSlot(surfaceId, slotIndex, MappingClip(
+                    name = selectedUri.lastPathSegment ?: "Image",
+                    sourceType = SourceType.IMAGE,
+                    path = selectedUri.toString()
+                ))
+            }
+        }
+        showQuickEdit = null
+    }
+
+    val sheetState = rememberModalBottomSheetState()
+    val scope = rememberCoroutineScope()
 
     Box(
         modifier = Modifier
@@ -54,11 +91,69 @@ fun DashboardScreen(
                         deck = activeDeck,
                         onClipClick = { surfaceId, clip -> viewModel.triggerClip(surfaceId, clip) },
                         onSaveClip = { surfaceId, slotIndex -> viewModel.saveCurrentStateToClip(surfaceId, slotIndex) },
+                        onLongClick = { surfaceId, slotIndex -> showQuickEdit = surfaceId to slotIndex },
                         onOpacityChange = { id, opacity -> viewModel.setOpacity(id, opacity) },
                         onToggleBlack = { id -> viewModel.toggleSurfaceBlack(id) }
                     )
                 }
             }
+        }
+
+        // Quick Edit Bottom Sheet
+        if (showQuickEdit != null) {
+            val (surfaceId, slotIndex) = showQuickEdit!!
+            val clip = activeDeck.layerClips[surfaceId]?.getOrNull(slotIndex)
+            
+            ModalBottomSheet(
+                onDismissRequest = { showQuickEdit = null },
+                sheetState = sheetState,
+                containerColor = Color(0xFF1A1A1A),
+                contentColor = Color.White
+            ) {
+                QuickEditMenu(
+                    clip = clip,
+                    surfaceName = uiState.surfaces.find { it.id == surfaceId }?.name ?: "Layer",
+                    onClear = {
+                        viewModel.deleteClipFromSlot(surfaceId, slotIndex)
+                        showQuickEdit = null
+                    },
+                    onCapture = {
+                        viewModel.saveCurrentStateToClip(surfaceId, slotIndex)
+                        showQuickEdit = null
+                    },
+                    onSetShader = {
+                        showShaderPicker = surfaceId to slotIndex
+                        showQuickEdit = null
+                    },
+                    onSetVideo = {
+                        videoPickerLauncher.launch("video/*")
+                        // showQuickEdit is handled in the launcher
+                    },
+                    onSetImage = {
+                        imagePickerLauncher.launch("image/*")
+                        // showQuickEdit is handled in the launcher
+                    },
+                    onCancel = { showQuickEdit = null }
+                )
+            }
+        }
+
+        // Shader Picker Dialog
+        if (showShaderPicker != null) {
+            val (surfaceId, slotIndex) = showShaderPicker!!
+            ShaderPickerDialog(
+                shaders = viewModel.shaderRegistry.keys.toList(),
+                onSelect = { shaderId ->
+                    viewModel.updateClipInSlot(surfaceId, slotIndex, MappingClip(
+                        name = shaderId,
+                        sourceType = SourceType.SHADER,
+                        path = shaderId,
+                        shaderParameters = viewModel.shaderRegistry[shaderId]?.associateWith { 0.5f } ?: emptyMap()
+                    ))
+                    showShaderPicker = null
+                },
+                onDismiss = { showShaderPicker = null }
+            )
         }
     }
 }
@@ -144,6 +239,7 @@ fun DashboardGrid(
     deck: MappingDeck,
     onClipClick: (String, MappingClip) -> Unit,
     onSaveClip: (String, Int) -> Unit,
+    onLongClick: (String, Int) -> Unit,
     onOpacityChange: (String, Float) -> Unit,
     onToggleBlack: (String) -> Unit
 ) {
@@ -162,6 +258,7 @@ fun DashboardGrid(
                 clips = deck.layerClips[surface.id] ?: emptyList(),
                 onClipClick = { clip -> onClipClick(surface.id, clip) },
                 onSaveClip = { slotIndex -> onSaveClip(surface.id, slotIndex) },
+                onLongClick = { slotIndex -> onLongClick(surface.id, slotIndex) },
                 onOpacityChange = { onOpacityChange(surface.id, it) },
                 onToggleBlack = { onToggleBlack(surface.id) },
                 tint = getNeonColor(index)
@@ -176,6 +273,7 @@ fun LayerColumn(
     clips: List<MappingClip?>,
     onClipClick: (MappingClip) -> Unit,
     onSaveClip: (Int) -> Unit,
+    onLongClick: (Int) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onToggleBlack: () -> Unit,
     tint: Color
@@ -256,6 +354,7 @@ fun LayerColumn(
                     surface = surface,
                     onTrigger = { clip?.let { onClipClick(it) } },
                     onSave = { onSaveClip(i) },
+                    onLongClick = { onLongClick(i) },
                     tint = tint
                 )
             }
@@ -263,12 +362,14 @@ fun LayerColumn(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ClipSlot(
     clip: MappingClip?,
     surface: MappingSurface,
     onTrigger: () -> Unit,
     onSave: () -> Unit,
+    onLongClick: () -> Unit,
     tint: Color
 ) {
     // Check if this clip's content is the one currently active on the surface
@@ -287,7 +388,10 @@ fun ClipSlot(
                 if (isPlaying) tint else Color.White.copy(alpha = 0.1f),
                 RoundedCornerShape(8.dp)
             )
-            .clickable(onClick = if (clip != null) onTrigger else onSave),
+            .combinedClickable(
+                onClick = if (clip != null) onTrigger else onSave,
+                onLongClick = onLongClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         if (clip != null) {
@@ -352,6 +456,168 @@ fun EmptyDashboardState() {
         Text("NO ACTIVE LAYERS FOUND", color = Color.Gray, fontWeight = FontWeight.Bold)
         Text("Create some surfaces in Edit Mode first.", color = Color.Gray, fontSize = 12.sp)
     }
+}
+
+@Composable
+fun QuickEditMenu(
+    clip: MappingClip?,
+    surfaceName: String,
+    onClear: () -> Unit,
+    onCapture: () -> Unit,
+    onSetShader: () -> Unit,
+    onSetVideo: () -> Unit,
+    onSetImage: () -> Unit,
+    onCancel: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(24.dp)
+            .navigationBarsPadding()
+    ) {
+        Text(
+            text = "QUICK EDIT: $surfaceName",
+            color = Color.White,
+            fontWeight = FontWeight.Black,
+            fontSize = 14.sp,
+            letterSpacing = 1.sp
+        )
+        
+        Spacer(modifier = Modifier.height(24.dp))
+        
+        // Capture Current State
+        QuickEditItem(
+            icon = Icons.Default.CameraAlt,
+            title = "Capture Current State",
+            subtitle = "Overwrite slot with current layer settings",
+            onClick = onCapture,
+            tint = Color(0xFF00E5FF)
+        )
+        
+        Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 8.dp))
+        
+        // Manual Content
+        QuickEditItem(
+            icon = Icons.Default.AutoAwesome,
+            title = "Assign New Shader",
+            subtitle = "Choose a generative shader for this slot",
+            onClick = onSetShader,
+            tint = Color(0xFFAA00FF)
+        )
+
+        QuickEditItem(
+            icon = Icons.Default.PlayArrow,
+            title = "Assign New Video",
+            subtitle = "Select a video file from your device",
+            onClick = onSetVideo,
+            tint = Color(0xFFFFEA00)
+        )
+
+        QuickEditItem(
+            icon = Icons.Default.Image,
+            title = "Assign New Image",
+            subtitle = "Select an image file from your device",
+            onClick = onSetImage,
+            tint = Color(0xFF00E676)
+        )
+        
+        if (clip != null) {
+            Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 8.dp))
+            
+            QuickEditItem(
+                icon = Icons.Default.Delete,
+                title = "Clear Slot",
+                subtitle = "Empty this memory slot",
+                onClick = onClear,
+                tint = Color.Red
+            )
+        }
+        
+        Spacer(modifier = Modifier.height(16.dp))
+        
+        TextButton(
+            onClick = onCancel,
+            modifier = Modifier.align(Alignment.End)
+        ) {
+            Text("CANCEL", color = Color.Gray)
+        }
+    }
+}
+
+@Composable
+fun QuickEditItem(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit,
+    tint: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .background(tint.copy(alpha = 0.1f), RoundedCornerShape(8.dp))
+                .border(1.dp, tint.copy(alpha = 0.3f), RoundedCornerShape(8.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(20.dp))
+        }
+        
+        Spacer(modifier = Modifier.width(16.dp))
+        
+        Column {
+            Text(title, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+            Text(subtitle, color = Color.White.copy(alpha = 0.5f), fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+fun ShaderPickerDialog(
+    shaders: List<String>,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = Color(0xFF1A1A1A),
+        title = { Text("SELECT SHADER", color = Color.White, fontWeight = FontWeight.Black, fontSize = 16.sp) },
+        text = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 400.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                shaders.forEach { shaderId ->
+                    Surface(
+                        onClick = { onSelect(shaderId) },
+                        color = Color.Transparent,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = Color(0xFFAA00FF), modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(12.dp))
+                            Text(shaderId, color = Color.White, fontSize = 14.sp)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("CLOSE", color = Color.Gray) }
+        }
+    )
 }
 
 fun getNeonColor(index: Int): Color {

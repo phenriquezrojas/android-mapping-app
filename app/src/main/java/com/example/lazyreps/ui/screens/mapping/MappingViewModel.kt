@@ -3,6 +3,9 @@ package com.example.lazyreps.ui.screens.mapping
 import android.content.Context
 import android.net.Uri
 import android.util.Log
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.core.content.ContextCompat
 import androidx.annotation.OptIn
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -29,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Job
 import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
@@ -83,7 +87,8 @@ data class MappingUiState(
     val showUpdateConfirmation: Boolean = false,
     val shaderPresets: List<ShaderPreset> = emptyList(), // Phase 2: Presets for current shader
     val decks: List<MappingDeck> = emptyList(), // Phase 3: Dashboard Grid
-    val activeDeckIndex: Int = 0
+    val activeDeckIndex: Int = 0,
+    val historyStack: List<List<MappingSurface>> = emptyList()
 )
 
 enum class ExecutionMode {
@@ -99,6 +104,7 @@ class MappingViewModel @Inject constructor(
     val uiState: StateFlow<MappingUiState> = _uiState.asStateFlow()
 
     private val players = mutableMapOf<String, ExoPlayer>()
+    private var playAllVideosJob: Job? = null
     lateinit var renderer: MappingRenderer
 
     // Networking
@@ -136,17 +142,125 @@ class MappingViewModel @Inject constructor(
         "GeometricPulse" to listOf("u_speed", "u_size", "u_repetition")
     )
 
+    fun logBreadcrumb(step: String) {
+        try {
+            Log.i("MappingForensics", "STEP: $step")
+            val timestampFull = java.text.SimpleDateFormat("yyyyMMdd_HHmm", java.util.Locale.US).format(java.util.Date())
+            val timestampShort = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+            
+            // Internal breadcrumbs
+            val forensicFile = File(context.filesDir, "forensic_breadcrumbs.txt")
+            forensicFile.appendText("[$timestampShort] $step\n")
+            
+            // Public forensic log (Requested)
+            val publicDownloadDir = File("/storage/emulated/0/Download")
+            if (publicDownloadDir.exists()) {
+                val hasWritePermission = ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+                
+                if (hasWritePermission) {
+                    val publicFile = File(publicDownloadDir, "mapping_trace_$timestampFull.log")
+                    
+                    val activityManager = context.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+                    val memoryInfo = android.app.ActivityManager.MemoryInfo()
+                    activityManager?.getMemoryInfo(memoryInfo)
+                    val availMemMb = memoryInfo.availMem / (1024 * 1024)
+                    
+                    publicFile.appendText("[$timestampShort] [RAM: ${availMemMb}MB] $step\n")
+                }
+            }
+        } catch (e: Exception) {
+            // Ignore
+        }
+    }
+
     init {
-        loadProjects()
-        loadCurrentState()
-        refreshLocalIp()
-        
-        // Auto-start networking based on loaded or default mode
-        switchExecutionMode(_uiState.value.executionMode)
+        logBreadcrumb("MappingViewModel INIT started")
+        try {
+            // Clear old breadcrumbs at start
+            File(context.filesDir, "forensic_breadcrumbs.txt").delete()
+            logBreadcrumb("Old forensic log cleared")
+
+            // Check for previous crash logs
+            viewModelScope.launch(Dispatchers.IO) {
+                try {
+                    val crashFile = java.io.File(context.filesDir, "last_crash.txt")
+                    if (crashFile.exists()) {
+                        val content = crashFile.readText()
+                        Log.w("MappingViewModel", "Found previous crash log:\n$content")
+                        _uiState.update { it.copy(errorMessage = "LAST CRASH FOUND:\n${content.take(700)}...") }
+                    }
+                } catch (e: Exception) {
+                    Log.e("MappingViewModel", "Error reading crash log", e)
+                }
+            }
+
+            logBreadcrumb("Loading projects...")
+            loadProjects()
+            logBreadcrumb("Projects loaded. Loading state...")
+            loadCurrentState()
+            logBreadcrumb("State loaded. Refreshing IP...")
+            refreshLocalIp()
+            
+            // Auto-start networking based on loaded or default mode
+            logBreadcrumb("Switching execution mode: ${_uiState.value.executionMode}")
+            switchExecutionMode(_uiState.value.executionMode)
+            logBreadcrumb("Initialization block finished.")
+        } catch (t: Throwable) {
+            logBreadcrumb("FATAL ERROR in init: ${t.message}")
+            Log.e("MappingViewModel", "FATAL: Error during init", t)
+            reportError("Critical Initialization Error: ${t.message ?: t.javaClass.simpleName}")
+        }
     }
 
     private fun refreshLocalIp() {
         _uiState.update { it.copy(localIp = getLocalIpAddress()) }
+    }
+
+    fun viewLastCrash() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val crashFile = File(context.filesDir, "last_crash.txt")
+                val content = if (crashFile.exists()) crashFile.readText() else "No crash log found."
+                _uiState.update { it.copy(errorMessage = "LAST FATAL ERROR:\n$content") }
+            } catch (e: Exception) {
+                reportError("Error reading crash: ${e.message}")
+            }
+        }
+    }
+
+    fun viewStartupTrail() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val forensicFile = File(context.filesDir, "forensic_breadcrumbs.txt")
+                val content = if (forensicFile.exists()) forensicFile.readText() else "No trail found."
+                _uiState.update { it.copy(errorMessage = "STARTUP TRAIL:\n$content") }
+            } catch (e: Exception) {
+                reportError("Error reading trail: ${e.message}")
+            }
+        }
+    }
+
+    fun dismissError() {
+        _uiState.update { it.copy(errorMessage = null) }
+    }
+
+    fun exportLogsToDownload() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val internal = File(context.filesDir, "forensic_breadcrumbs.txt")
+                if (internal.exists()) {
+                    val publicDir = File("/storage/emulated/0/Download")
+                    if (!publicDir.exists()) publicDir.mkdirs()
+                    val target = File(publicDir, "manual_mapping_export.log")
+                    internal.copyTo(target, overwrite = true)
+                    _uiState.update { it.copy(errorMessage = "Logs exported to Downloads as manual_mapping_export.log") }
+                } else {
+                    _uiState.update { it.copy(errorMessage = "No logs found to export.") }
+                }
+            } catch (e: Exception) {
+                reportError("Export failed: ${e.message}")
+            }
+        }
     }
 
     private fun getLocalIpAddress(): String? {
@@ -212,21 +326,28 @@ class MappingViewModel @Inject constructor(
     }
 
     private fun startServerMode() {
+        logBreadcrumb("startServerMode called")
         Log.d("MappingViewModel", "startServerMode: Starting networking threads...")
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                logBreadcrumb("Server IO Thread started. Starting NetworkManager...")
                 Log.d("MappingViewModel", "startServerMode: Initializing and starting NetworkManager")
                 val filesDir = context.getExternalFilesDir(null) ?: context.filesDir
+                logBreadcrumb("Storage Dir: ${filesDir.absolutePath}")
                 networkManager.startServer(filesDir, com.example.lazyreps.BuildConfig.VERSION_NAME)
                 
+                logBreadcrumb("NetworkManager started. Starting DiscoveryService...")
                 Log.d("MappingViewModel", "startServerMode: Starting DiscoveryService")
                 discoveryService.startServerDiscovery { clientAddr ->
-                    Log.d("MappingViewModel", "Client discovered server: $clientAddr")
+                    android.util.Log.i("MappingViewModel", "Client discovered server: $clientAddr")
                 }
                 _uiState.update { it.copy(connectionStatus = ConnectionStatus.CONNECTED, serverIp = "Local Server") }
+                logBreadcrumb("DiscoveryService started. Server ready.")
                 Log.i("MappingViewModel", "startServerMode: Server networking ready.")
-            } catch (e: Exception) {
-                reportError("Failed to start server: ${e.message}")
+            } catch (t: Throwable) {
+                logBreadcrumb("FATAL ERROR in startServerMode: ${t.message}")
+                Log.e("MappingViewModel", "FATAL: Failed to start serverMode", t)
+                reportError("Failed to start server: ${t.message ?: t.javaClass.simpleName}")
             }
         }
     }
@@ -291,9 +412,12 @@ class MappingViewModel @Inject constructor(
     private fun syncRenderer() {
         if (::renderer.isInitialized) {
             val ui = _uiState.value
+            val targetMode = if (ui.executionMode == ExecutionMode.CLIENT) "EDIT" else (if (ui.isProjectionMode) "SHOW" else "EDIT")
+            Log.d("MappingViewModel", "syncRenderer: Sending mode $targetMode to renderer. (Exec: ${ui.executionMode}, Proj: ${ui.isProjectionMode})")
             renderer.updateState(MappingState(
-                // En el celular (Cliente), siempre queremos ver las guías para poder editar,
-                // independientemente de si el proyector está en modo SHOW.
+                // [v1.5.8] Enforce visibility rules:
+                // CLIENT: Always "EDIT" to keep UI/Grid visible for control.
+                // SERVER: "SHOW" only if isProjectionMode is true, otherwise "EDIT".
                 outputMode = if (ui.executionMode == ExecutionMode.CLIENT) "EDIT" else (if (ui.isProjectionMode) "SHOW" else "EDIT"),
                 surfaces = ui.surfaces,
                 screenWidth = ui.screenWidth,
@@ -334,8 +458,10 @@ class MappingViewModel @Inject constructor(
 
     fun releaseRenderer() {
         // Detach players from surfaces preventing decoder crashes
-        players.values.forEach { 
-             it.clearVideoSurface() 
+        players.values.forEach { player -> 
+            player.clearVideoSurface()
+            // Cache player state
+            player.playWhenReady = player.isPlaying
         }
         // We don't release the player instance itself, just detach the output
     }
@@ -405,9 +531,7 @@ class MappingViewModel @Inject constructor(
         return inside
     }
 
-    fun dismissError() {
-        _uiState.update { it.copy(errorMessage = null) }
-    }
+
 
     fun confirmUpdate() {
         val uiState = _uiState.value
@@ -436,10 +560,14 @@ class MappingViewModel @Inject constructor(
         Log.e("MappingViewModel", "Reported error: $message")
     }
 
-    fun addSurface(shape: MappingShape = MappingShape.SQUARE, width: Float, height: Float, fromRemote: Boolean = false) {
+    fun addSurface(shape: MappingShape = MappingShape.SQUARE, width: Float, height: Float, fromRemote: Boolean = false, id: String? = null) {
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            dispatchCommand(MappingCommand.AddSurface(shape.name, width, height))
-            return
+            val newId = id ?: java.util.UUID.randomUUID().toString()
+            dispatchCommand(MappingCommand.AddSurface(shape.name, width, height, newId))
+            // Optimistic local update: Create it immediately so it feels responsive
+            // But we need to use the SAME ID
+            return // Wait for server? No, we should probably add it optimistically or just wait if we want strict sync.
+            // For now, let's just send the command and let the server broadcast it back.
         }
         
         val corners: FloatArray
@@ -516,12 +644,25 @@ class MappingViewModel @Inject constructor(
         }
         
         val newSurface = MappingSurface(
+            id = id ?: java.util.UUID.randomUUID().toString(),
             corners = corners,
             texCoords = texCoords
         )
         _uiState.update { it.copy(surfaces = it.surfaces + newSurface) }
         syncRenderer()
         saveCurrentState()
+        
+        // [v1.5.8] Broadcast new surface to clients if created locally on Server
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.SERVER) {
+            val state = MappingState(
+                outputMode = if (_uiState.value.isProjectionMode) "SHOW" else "EDIT",
+                surfaces = _uiState.value.surfaces,
+                screenWidth = _uiState.value.screenWidth,
+                screenHeight = _uiState.value.screenHeight,
+                isFullScreen = _uiState.value.isFullScreen
+            )
+            networkManager.sendState(state)
+        }
     }
 
     fun createRandomTestShapes(width: Float, height: Float) {
@@ -956,6 +1097,7 @@ class MappingViewModel @Inject constructor(
         saveCurrentState()
     }
 
+
     fun setShaderForSurface(id: String, shaderId: String, fromRemote: Boolean = false) {
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
             dispatchCommand(MappingCommand.SetShaderId(id, shaderId))
@@ -1075,6 +1217,12 @@ class MappingViewModel @Inject constructor(
 
     fun processCommand(command: MappingCommand) {
         when (command) {
+            is MappingCommand.RemoveSurface -> {
+                removeSurface(command.surfaceId, fromRemote = true)
+            }
+            is MappingCommand.TriggerClip -> {
+                triggerClip(command.surfaceId, command.clip, fromRemote = true)
+            }
             is MappingCommand.UpdateVertex -> {
                 _uiState.value.surfaces.find { it.id == command.surfaceId }?.let { surface ->
                     val newCorners = surface.corners.copyOf()
@@ -1104,30 +1252,30 @@ class MappingViewModel @Inject constructor(
                 } catch (e: Exception) {
                     MappingShape.QUAD
                 }
-                addSurface(shape, command.screenWidth, command.screenHeight, fromRemote = true)
+                addSurface(shape, command.screenWidth, command.screenHeight, fromRemote = true, id = command.id)
             }
             is MappingCommand.SetOutputMode -> {
+                Log.d("MappingViewModel", "SetOutputMode received: ${command.mode} (current: ${_uiState.value.isProjectionMode})")
                 val isShow = command.mode == "SHOW"
                 _uiState.update { it.copy(isProjectionMode = isShow) }
-                if (::renderer.isInitialized) {
-                    renderer.updateState(MappingState(
-                        outputMode = command.mode,
-                        surfaces = _uiState.value.surfaces
-                    ))
-                }
+                syncRenderer()
                 saveCurrentState()
+                
+                // Broadcast state to keep clients in sync (especially for Show Mode toggle)
+                if (_uiState.value.executionMode == ExecutionMode.SERVER) {
+                    val currentState = MappingState(
+                        outputMode = if (isShow) "SHOW" else "EDIT",
+                        surfaces = _uiState.value.surfaces,
+                        screenWidth = _uiState.value.screenWidth,
+                        screenHeight = _uiState.value.screenHeight,
+                        isFullScreen = _uiState.value.isFullScreen
+                    )
+                    networkManager.sendState(currentState)
+                }
             }
             is MappingCommand.ToggleFullScreen -> {
                 _uiState.update { it.copy(isFullScreen = command.isEnabled) }
                 // Propagar si es necesario, pero toggleFullScreen ya despacha
-            }
-            is MappingCommand.FlipSurface,
-            is MappingCommand.SetLayerPlayState,
-            is MappingCommand.SetPlaybackSpeed,
-            is MappingCommand.SetImagePath,
-            is MappingCommand.TriggerClip,
-            is MappingCommand.SetActiveDeck -> {
-                networkManager.sendCommand(command)
             }
             
             is MappingCommand.SetSourceType -> {
@@ -1162,6 +1310,7 @@ class MappingViewModel @Inject constructor(
                 loadPresetsForShader(newShaderId) // Load presets for the new shader
                 syncRenderer()
                 saveCurrentState()
+                Log.d("MappingViewModel", "SetShaderId applied: $newShaderId. Sync triggered.")
             }
             is MappingCommand.UpdateShaderParameter -> {
                 _uiState.update { state ->
@@ -1179,32 +1328,6 @@ class MappingViewModel @Inject constructor(
                 // but sync renderer is enough for real-time visual.
             }
 
-            is MappingCommand.SetVideoPath -> {
-                val uri = if (command.remotePath.startsWith("/") || command.remotePath.startsWith("file:")) {
-                    Uri.fromFile(java.io.File(command.remotePath.removePrefix("file://")))
-                } else {
-                    Uri.parse(command.remotePath)
-                }
-                
-                Log.d("MappingViewModel", "SetVideoPath: remotePath=${command.remotePath}, Result URI=$uri")
-                
-                _uiState.update { state ->
-                    val updated = state.surfaces.map {
-                        if (it.id == command.surfaceId) it.copy(videoPath = uri.toString()) else it
-                    }
-                    state.copy(surfaces = updated)
-                }
-                syncRenderer()
-                
-                // Asegurar ejecución en Main thread para ExoPlayer
-                viewModelScope.launch(Dispatchers.Main) {
-                    // En modo CLIENTE no reproducimos video localmente (ahorra recursos y evita errores de ruta)
-                    if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
-                        setupPlayer(command.surfaceId, uri)
-                    }
-                }
-                saveCurrentState()
-            }
             is MappingCommand.SetPlayState -> {
                 if (command.isPlaying) resumeAllVideos() else pauseAllVideos()
             }
@@ -1233,7 +1356,6 @@ class MappingViewModel @Inject constructor(
                     remoteVersionCode = command.versionCode
                 ) }
                 val myVersion = com.example.lazyreps.BuildConfig.VERSION_CODE
-                val ip = _uiState.value.serverIp ?: return
 
                 if (command.versionCode > myVersion) {
                     Log.i("MappingViewModel", "Server is newer. Update available.")
@@ -1245,6 +1367,29 @@ class MappingViewModel @Inject constructor(
             }
             
             // Phase 1: Foundation Features Handlers
+            is MappingCommand.SetVideoPath -> {
+                Log.d("MappingViewModel", "SetVideoPath command for ${command.surfaceId}: ${command.remotePath}")
+                val uri = if (command.remotePath.startsWith("/") || command.remotePath.startsWith("file:")) {
+                    Uri.fromFile(java.io.File(command.remotePath.removePrefix("file://")))
+                } else {
+                    Uri.parse(command.remotePath)
+                }
+                
+                setVideoForSurface(command.surfaceId, uri, fromRemote = true)
+            }
+            is MappingCommand.SetImagePath -> {
+                Log.d("MappingViewModel", "SetImagePath command for ${command.surfaceId}: ${command.imagePath}")
+                setImageForSurface(command.surfaceId, command.imagePath, fromRemote = true)
+            }
+            is MappingCommand.SetLayerPlayState -> {
+                setLayerPlayState(command.surfaceId, command.isPlaying, fromRemote = true)
+            }
+            is MappingCommand.SetPlaybackSpeed -> {
+                setPlaybackSpeed(command.surfaceId, command.speed, fromRemote = true)
+            }
+            is MappingCommand.FlipSurface -> {
+                flipSurface(command.surfaceId, command.horizontal, command.vertical, fromRemote = true)
+            }
             is MappingCommand.SetOpacity -> {
                 setOpacity(command.surfaceId, command.opacity, fromRemote = true)
             }
@@ -1257,26 +1402,7 @@ class MappingViewModel @Inject constructor(
             is MappingCommand.RotateSurface -> {
                 rotateSurface(command.surfaceId, command.rotation, fromRemote = true)
             }
-            is MappingCommand.FlipSurface -> {
-                flipSurface(command.surfaceId, command.horizontal, command.vertical, fromRemote = true)
-            }
             
-            // Phase 2: Content & Effects Handlers
-            is MappingCommand.SetLayerPlayState -> {
-                setLayerPlayState(command.surfaceId, command.isPlaying, fromRemote = true)
-            }
-            is MappingCommand.SetPlaybackSpeed -> {
-                setPlaybackSpeed(command.surfaceId, command.speed, fromRemote = true)
-            }
-            is MappingCommand.SetImagePath -> {
-                setImageForSurface(command.surfaceId, command.imagePath, fromRemote = true)
-            }
-            is MappingCommand.SetImagePath -> {
-                setImageForSurface(command.surfaceId, command.imagePath, fromRemote = true)
-            }
-            is MappingCommand.TriggerClip -> {
-                triggerClip(command.surfaceId, command.clip, fromRemote = true)
-            }
             is MappingCommand.SetActiveDeck -> {
                 setActiveDeck(command.deckIndex, fromRemote = true)
             }
@@ -1325,6 +1451,52 @@ class MappingViewModel @Inject constructor(
     }
 
 
+
+    fun undo() {
+        if (_uiState.value.historyStack.isNotEmpty()) {
+            val lastState = _uiState.value.historyStack.last()
+            val newStack = _uiState.value.historyStack.dropLast(1)
+            
+            _uiState.update { it.copy(
+                surfaces = lastState,
+                historyStack = newStack
+            ) }
+            
+            syncRenderer()
+            saveCurrentState(addToHistory = false)
+            
+            if (_uiState.value.executionMode == ExecutionMode.SERVER) {
+                val state = MappingState(
+                    outputMode = if (_uiState.value.isProjectionMode) "SHOW" else "EDIT",
+                    surfaces = _uiState.value.surfaces,
+                    screenWidth = _uiState.value.screenWidth,
+                    screenHeight = _uiState.value.screenHeight,
+                    isFullScreen = _uiState.value.isFullScreen
+                )
+                networkManager.sendState(state)
+            }
+        }
+    }
+
+    private fun saveCurrentState(addToHistory: Boolean = true) {
+        if (addToHistory) {
+            val currentSurfaces = _uiState.value.surfaces
+            _uiState.update { state ->
+                val newStack = state.historyStack.toMutableList()
+                newStack.add(currentSurfaces)
+                if (newStack.size > 20) newStack.removeAt(0)
+                state.copy(historyStack = newStack)
+            }
+        }
+        val json = getCurrentStateJson()
+        // Procedimiento de guardado real (persistir a disco)...
+        try {
+            val file = java.io.File(context.filesDir, "current_project.json")
+            file.writeText(json)
+        } catch (e: Exception) {
+            Log.e("MappingViewModel", "Error saving state: ${e.message}")
+        }
+    }
 
     fun getCurrentStateJson(): String {
         val ui = _uiState.value
@@ -1501,6 +1673,17 @@ class MappingViewModel @Inject constructor(
         }
     }
 
+    fun clearAllSurfaces() {
+        _uiState.update { it.copy(surfaces = emptyList()) }
+        if (::renderer.isInitialized) {
+            renderer.updateSurfaces(emptyList())
+        }
+        players.values.forEach { it.release() }
+        players.clear()
+        syncRenderer()
+        dispatchCommand(MappingCommand.ClearAll())
+    }
+
     private fun pauseAllVideos() {
         players.values.forEach { it.pause() }
         _uiState.update { it.copy(isPlaying = false) }
@@ -1513,7 +1696,8 @@ class MappingViewModel @Inject constructor(
 
     fun playAllVideos() {
         Log.d("MappingViewModel", "playAllVideos called")
-        viewModelScope.launch {
+        playAllVideosJob?.cancel()
+        playAllVideosJob = viewModelScope.launch {
             _uiState.update { it.copy(isPlaying = true) }
             
             // Delay inicial para dar tiempo al renderer
@@ -1527,9 +1711,34 @@ class MappingViewModel @Inject constructor(
                     val uri = Uri.parse(path)
                     Log.d("MappingViewModel", "Surface ${surface.id}: setting up player (staggered)")
                     try {
-                        // Siempre recrear el player para asegurar configuración limpia
-                        players[surface.id]?.release()
-                        setupPlayer(surface.id, uri)
+                        // Verificar si ya existe un player para esta superficie
+                        val existingPlayer = players[surface.id]
+                        if (existingPlayer != null) {
+                            // Reconectar player existente
+                            Log.d("MappingViewModel", "Found existing player for ${surface.id}, requesting surface...")
+                            if (::renderer.isInitialized) {
+                                renderer.getSurfaceForId(surface.id) { newSurface ->
+                                    Log.d("MappingViewModel", "Surface callback received for existing player ${surface.id}. Surface valid: ${newSurface.isValid}")
+                                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                                        Log.d("MappingViewModel", "Setting video surface for existing player ${surface.id} on main thread")
+                                        if (newSurface.isValid) {
+                                            existingPlayer.setVideoSurface(newSurface)
+                                            existingPlayer.prepare() 
+                                            if (existingPlayer.playWhenReady) {
+                                                Log.d("MappingViewModel", "Resuming play for ${surface.id}")
+                                                existingPlayer.play()
+                                            }
+                                        } else {
+                                            Log.e("MappingViewModel", "Cannot set invalid surface for existing player ${surface.id}")
+                                        }
+                                    }
+                                }
+                            }
+                        } else {
+                            // Crear nuevo player si no existe
+                            Log.d("MappingViewModel", "No existing player for ${surface.id}, calling setupPlayer")
+                            setupPlayer(surface.id, uri)
+                        }
                     } catch (t: Throwable) {
                          Log.e("MappingViewModel", "Error in staggered load for ${surface.id}", t)
                          _uiState.update { it.copy(errorMessage = "Error loading video: ${t.message}") }
@@ -1560,14 +1769,31 @@ class MappingViewModel @Inject constructor(
         try {
             players[id]?.release()
             
-            val player = ExoPlayer.Builder(context).build().apply {
+            val player = ExoPlayer.Builder(context).build()
+            player.apply {
                 repeatMode = Player.REPEAT_MODE_ALL
                 playWhenReady = true
                 
                 addListener(object : Player.Listener {
                     override fun onPlaybackStateChanged(playbackState: Int) {
+                        val stateName = when(playbackState) {
+                            Player.STATE_IDLE -> "IDLE"
+                            Player.STATE_BUFFERING -> "BUFFERING"
+                            Player.STATE_READY -> "READY"
+                            Player.STATE_ENDED -> "ENDED"
+                            else -> "UNKNOWN"
+                        }
+                        Log.d("MappingViewModel", "Player $id state changed to $stateName. VideoSize: ${player.videoSize.width}x${player.videoSize.height}")
+                        
                         if (playbackState == Player.STATE_READY) {
                             // Video listo. Actualizamos surfaces para quitar pantalla negra.
+                            syncRenderer()
+                        }
+                    }
+                    
+                    override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
+                        Log.d("MappingViewModel", "Player $id video size changed: ${videoSize.width}x${videoSize.height}")
+                        if (videoSize.width > 0 && videoSize.height > 0) {
                             syncRenderer()
                         }
                     }
@@ -1587,30 +1813,39 @@ class MappingViewModel @Inject constructor(
             }
             players[id] = player
             
-            renderer.getSurfaceForId(id) { surface ->
-                // CRITICAL FIX: Ensure this runs on Main Thread.
-                android.os.Handler(android.os.Looper.getMainLooper()).post {
-                    try {
-                        // Verificar que el player sigue siendo el actual para este ID
-                        // (evitar race conditions si se cambió el video rápidamente)
-                        if (players[id] != player) {
-                            Log.w("MappingViewModel", "Player for $id has changed, ignoring old surface callback")
-                            player.release()
-                            return@post
+            if (::renderer.isInitialized) {
+                renderer.getSurfaceForId(id) { surface ->
+                    Log.d("MappingViewModel", "Surface callback for new player $id. Surface valid: ${surface.isValid}")
+                    // CRITICAL FIX: Ensure this runs on Main Thread.
+                    android.os.Handler(android.os.Looper.getMainLooper()).post {
+                        try {
+                            Log.d("MappingViewModel", "Setting video surface for new player $id on main thread")
+                            // Verificar que el player sigue siendo el actual para este ID
+                            // (evitar race conditions si se cambió el video rápidamente)
+                            if (players[id] != player) {
+                                Log.w("MappingViewModel", "Player for $id has changed, ignoring old surface callback")
+                                player.release()
+                                return@post
+                            }
+                            
+                            if (surface.isValid) {
+                                player.setVideoSurface(surface)
+                                player.setMediaItem(MediaItem.fromUri(uri))
+                                player.prepare()
+                                Log.d("MappingViewModel", "Player $id prepared and surface set.")
+                            } else {
+                                Log.e("MappingViewModel", "Cannot set invalid surface for new player $id")
+                            }
+                        } catch (e: Exception) {
+                            Log.e("MappingViewModel", "Error setting surface for $id", e)
                         }
-
-                        Log.d("MappingViewModel", "Surface received for $id. Setting up ExoPlayer.")
-                        player.setVideoSurface(surface)
-                        player.setMediaItem(MediaItem.fromUri(uri))
-                        player.repeatMode = Player.REPEAT_MODE_ONE
-                        player.prepare()
-                        player.play() 
-                        syncRenderer()
-                    } catch (t: Throwable) {
-                        Log.e("MappingViewModel", "Error inside surface callback for $id: ${t.message}", t)
                     }
                 }
+            } else {
+                Log.w("MappingViewModel", "Renderer not initialized yet for setupPlayer($id). Surface will be requested later.")
             }
+            player.play() 
+            syncRenderer()
         } catch (t: Throwable) {
             val msg = "Critical setupPlayer error: ${t.message}"
             Log.e("MappingViewModel", msg, t)
@@ -1873,13 +2108,21 @@ class MappingViewModel @Inject constructor(
             shaderParameters = surface.shaderParameters.toMap()
         )
 
+        updateClipInSlot(surfaceId, slotIndex, newClip)
+    }
+
+    fun deleteClipFromSlot(surfaceId: String, slotIndex: Int) {
+        updateClipInSlot(surfaceId, slotIndex, null)
+    }
+
+    fun updateClipInSlot(surfaceId: String, slotIndex: Int, clip: MappingClip?) {
         _uiState.update { state ->
             val updatedDecks = state.decks.mapIndexed { index, deck ->
                 if (index == state.activeDeckIndex) {
-                    val currentClips = deck.layerClips[surfaceId]?.toMutableList() ?: MutableList<MappingClip?>(8) { null }
-                    // Asegurar que la lista tiene al menos slotIndex + 1 elementos
+                    val currentClips = deck.layerClips[surfaceId]?.toMutableList() ?: MutableList<MappingClip?>(12) { null }
+                    // Asegurar capacidad
                     while (currentClips.size <= slotIndex) currentClips.add(null)
-                    currentClips[slotIndex] = newClip
+                    currentClips[slotIndex] = clip
                     deck.copy(layerClips = deck.layerClips + (surfaceId to currentClips))
                 } else deck
             }
@@ -2087,6 +2330,8 @@ class MappingViewModel @Inject constructor(
             Log.d("MappingViewModel", "Client/Server connected: $address")
             if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
                 _uiState.update { it.copy(connectionStatus = ConnectionStatus.CONNECTED, isUpdatingRemote = false) }
+                reconnectJob?.cancel()
+                reconnectJob = null
                 // Send Hello
                 val myVersion = com.example.lazyreps.BuildConfig.VERSION_CODE
                 val myVersionName = com.example.lazyreps.BuildConfig.VERSION_NAME
@@ -2102,6 +2347,7 @@ class MappingViewModel @Inject constructor(
     }
 
     private var isReconnecting = false
+    private var reconnectJob: kotlinx.coroutines.Job? = null
 
     override fun onClientDisconnected(address: String) {
          viewModelScope.launch(Dispatchers.Main) {
@@ -2109,6 +2355,7 @@ class MappingViewModel @Inject constructor(
             if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
                 updateConnectionStatus(ConnectionStatus.DISCONNECTED)
                 if (!isReconnecting) {
+                    reconnectJob?.cancel()
                     attemptReconnect(address)
                 }
             }
@@ -2124,13 +2371,20 @@ class MappingViewModel @Inject constructor(
         
         Log.d("MappingViewModel", "Attempting auto-reconnect to $targetIp in ${if(isUpdatePending) "10s" else "3s"}...")
         
-        viewModelScope.launch(Dispatchers.IO) {
+        reconnectJob = viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(if(isUpdatePending) 10000 else 3000) // Wait longer if we just pushed an update
              if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+                 // Final check before reconnecting
+                 if (_uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
+                     Log.d("MappingViewModel", "Already connected, skipping auto-reconnect.")
+                     isReconnecting = false
+                     return@launch
+                 }
                  Log.d("MappingViewModel", "Reconnecting now...")
                  networkManager.connectClient(targetIp)
              }
              isReconnecting = false
+             reconnectJob = null
         }
     }
 
