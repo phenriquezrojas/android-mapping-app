@@ -19,13 +19,23 @@ fun MappingApp() {
             color = MaterialTheme.colorScheme.background
         ) {
             val navController = rememberNavController()
+            val sharedViewModel: com.example.lazyreps.ui.screens.mapping.MappingViewModel = androidx.hilt.navigation.compose.hiltViewModel()
             
             NavHost(
                 navController = navController,
                 startDestination = "mapping"
             ) {
                 composable("mapping") {
-                    MappingScreen()
+                    MappingScreen(
+                        viewModel = sharedViewModel,
+                        onNavigateToDashboard = { navController.navigate("dashboard") }
+                    )
+                }
+                composable("dashboard") {
+                    com.example.lazyreps.ui.screens.dashboard.DashboardScreen(
+                        viewModel = sharedViewModel,
+                        onNavigateBack = { navController.popBackStack() }
+                    )
                 }
             }
         }

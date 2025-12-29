@@ -24,10 +24,13 @@ import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Fullscreen
 import androidx.compose.material.icons.filled.FullscreenExit
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
@@ -75,7 +78,8 @@ import com.google.accompanist.permissions.rememberPermissionState
 @OptIn(ExperimentalComposeUiApi::class, ExperimentalPermissionsApi::class)
 @Composable
 fun MappingScreen(
-    viewModel: MappingViewModel = androidx.hilt.navigation.compose.hiltViewModel()
+    viewModel: MappingViewModel = androidx.hilt.navigation.compose.hiltViewModel(),
+    onNavigateToDashboard: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
@@ -95,10 +99,12 @@ fun MappingScreen(
 
     var showFilePicker by remember { mutableStateOf(false) }
     var showContentSettings by remember { mutableStateOf(false) }
+    var filePickerMode by remember { mutableStateOf(SourceType.VIDEO) }
 
     // Función segura para lanzar video picker (Internal)
-    val openVideoPicker = {
+    val openFilePicker = { mode: SourceType ->
         if (permissionState.status.isGranted) {
+             filePickerMode = mode
              showFilePicker = true
         } else {
              permissionState.launchPermissionRequest()
@@ -125,8 +131,11 @@ fun MappingScreen(
         }
     }
 
-    LaunchedEffect(renderer) {
+    DisposableEffect(renderer) {
         viewModel.initRenderer(renderer)
+        onDispose {
+            viewModel.releaseRenderer()
+        }
     }
 
     var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
@@ -434,7 +443,7 @@ fun MappingScreen(
                     selectedSurfaceId = uiState.selectedSurfaceId,
                     onAddSurface = { shape -> viewModel.addSurface(shape, screenW, screenH) },
                     onToggleProjection = { viewModel.toggleProjectionMode() },
-                    onPickVideo = { openVideoPicker() },
+                    onPickVideo = { openFilePicker(SourceType.VIDEO) },
                     onClearAll = { showClearConfirm = true },
                     onOpenProjects = { showProjectsDialog = true },
                     onSaveProject = { showSaveDialog = true },
@@ -452,6 +461,7 @@ fun MappingScreen(
                     onOpenRoleSettings = { showRoleDialog = true },
                     onRetryDiscovery = { viewModel.startDiscovery() },
                     isFullScreen = uiState.isFullScreen,
+                    onNavigateToDashboard = onNavigateToDashboard,
                     onToggleFullScreen = { viewModel.toggleFullScreen(it) },
                     appVersion = uiState.appVersion,
                     remoteAppVersion = uiState.remoteAppVersion
@@ -574,7 +584,11 @@ fun MappingScreen(
                     try {
                         val uri = android.net.Uri.fromFile(file)
                         uiState.selectedSurfaceId?.let { id ->
-                            viewModel.setVideoForSurface(id, uri)
+                            if (filePickerMode == SourceType.IMAGE) {
+                                viewModel.setImageForSurface(id, file.absolutePath)
+                            } else {
+                                viewModel.setVideoForSurface(id, uri)
+                            }
                         }
                     } catch (e: Exception) {
                         viewModel.reportError("File selection error: ${e.message}")
@@ -583,7 +597,11 @@ fun MappingScreen(
                 onRemoteFileSelected = { path ->
                     showFilePicker = false
                     uiState.selectedSurfaceId?.let { id ->
-                        viewModel.dispatchCommand(com.example.lazyreps.core.models.MappingCommand.SetVideoPath(id, path))
+                        if (filePickerMode == SourceType.IMAGE) {
+                            viewModel.setImageForSurface(id, path)
+                        } else {
+                            viewModel.dispatchCommand(com.example.lazyreps.core.models.MappingCommand.SetVideoPath(id, path))
+                        }
                     }
                 },
                 onDirectoryChanged = { dir ->
@@ -659,7 +677,30 @@ fun MappingScreen(
                     onToggleBlack = { viewModel.dispatchCommand(MappingCommand.ToggleBlackMode(surface.id)) },
                     onMoveUp = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "UP")) },
                     onMoveDown = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "DOWN")) },
-                    onPickVideo = { openVideoPicker() }
+                    onPickVideo = { openFilePicker(SourceType.VIDEO) },
+                    // Phase 1 extras
+                    onOpacityChange = { viewModel.setOpacity(surface.id, it) },
+                    onToggleVisibility = { viewModel.toggleVisibility(surface.id) },
+                    onNameChange = { viewModel.setLayerName(surface.id, it) },
+                    onRotationChange = { viewModel.rotateSurface(surface.id, it) },
+                    onFlipHorizontal = { viewModel.flipSurface(surface.id, !surface.flipHorizontal, surface.flipVertical) },
+                    onFlipVertical = { viewModel.flipSurface(surface.id, surface.flipHorizontal, !surface.flipVertical) },
+                    // Phase 2 extras
+                    onPickImage = { openFilePicker(SourceType.IMAGE) },
+                    onTogglePlay = { viewModel.setLayerPlayState(surface.id, !surface.isPlaying) },
+                    onPlaybackSpeedChange = { viewModel.setPlaybackSpeed(surface.id, it) },
+                    shaderPresets = uiState.shaderPresets,
+                    onSavePreset = { name -> 
+                        surface.shaderId?.let { shaderId ->
+                            viewModel.saveShaderPreset(shaderId, name, surface.shaderParameters)
+                        }
+                    },
+                    onApplyPreset = { preset -> viewModel.applyShaderPreset(surface.id, preset) },
+                    onDeletePreset = { presetId -> 
+                        surface.shaderId?.let { shaderId ->
+                            viewModel.deleteShaderPreset(presetId, shaderId)
+                        }
+                    }
                 )
             }
         }
@@ -689,6 +730,7 @@ fun MappingControls(
     onOpenRoleSettings: () -> Unit,
     onRetryDiscovery: () -> Unit,
     isFullScreen: Boolean,
+    onNavigateToDashboard: () -> Unit,
     onToggleFullScreen: (Boolean) -> Unit,
     appVersion: String,
     remoteAppVersion: String? = null
@@ -887,6 +929,12 @@ fun MappingControls(
                         color = if (isPlaying) Color.Red else Color(0xFF2196F3)
                     )
                 }
+
+                LargeGlassButton(
+                    onClick = onNavigateToDashboard,
+                    icon = Icons.Default.GridView,
+                    color = Color(0xFFAA00FF) // Purple Neon
+                )
 
                 LargeGlassButton(
                     onClick = onClearAll,
@@ -1361,7 +1409,22 @@ fun SurfaceContentDialog(
     onToggleBlack: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
-    onPickVideo: () -> Unit
+    onPickVideo: () -> Unit,
+    // Phase 1 extras
+    onOpacityChange: (Float) -> Unit,
+    onToggleVisibility: () -> Unit,
+    onNameChange: (String) -> Unit,
+    onRotationChange: (Float) -> Unit,
+    onFlipHorizontal: () -> Unit,
+    onFlipVertical: () -> Unit,
+    // Phase 2 extras
+    onPickImage: () -> Unit,
+    onTogglePlay: () -> Unit,
+    onPlaybackSpeedChange: (Float) -> Unit,
+    shaderPresets: List<ShaderPreset>,
+    onSavePreset: (String) -> Unit,
+    onApplyPreset: (ShaderPreset) -> Unit,
+    onDeletePreset: (String) -> Unit
 ) {
     var isInteracting by remember { mutableStateOf(false) }
     val animatedAlpha by animateFloatAsState(
@@ -1372,157 +1435,218 @@ fun SurfaceContentDialog(
 
     PremiumDialog(
         onDismissRequest = onDismissRequest,
-        title = surface.name,
+        title = "Ajustes de Capa",
         alpha = animatedAlpha
     ) {
-        val scrollState = rememberScrollState()
-        Column(
-            modifier = Modifier
-                .fillMaxHeight(0.85f)
-                .verticalScroll(scrollState),
-            verticalArrangement = Arrangement.spacedBy(20.dp)
-        ) {
-            // Section 1: Visibility & Priority
-            DialogSection(title = "General & Orden") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text("Capa en Negro", color = Color.White, style = MaterialTheme.typography.bodyLarge)
-                        Text("Oculta el contenido visual", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
-                    }
-                    Switch(
-                        checked = surface.isBlack,
-                        onCheckedChange = { onToggleBlack() },
-                        colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan)
+        Column(modifier = Modifier.fillMaxWidth()) {
+            // Header with Name Editing
+            var nameText by remember(surface.id) { mutableStateOf(surface.name) }
+            OutlinedTextField(
+                value = nameText,
+                onValueChange = { 
+                    nameText = it
+                    onNameChange(it)
+                },
+                modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                label = { Text("Nombre de Capa", color = Color.Gray) },
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = Color.Cyan),
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = Color.Cyan,
+                    unfocusedBorderColor = Color.White.copy(alpha = 0.2f),
+                    cursorColor = Color.Cyan
+                )
+            )
+
+            var selectedTab by remember { mutableIntStateOf(0) }
+            val tabs = listOf("Capa", "Contenido", "Efectos")
+
+            TabRow(
+                selectedTabIndex = selectedTab,
+                containerColor = Color.Transparent,
+                contentColor = Color.Cyan,
+                indicator = { tabPositions ->
+                    TabRowDefaults.Indicator(
+                        Modifier.tabIndicatorOffset(tabPositions[selectedTab]),
+                        color = Color.Cyan
                     )
-                }
-                
-                Spacer(modifier = Modifier.height(12.dp))
-                
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    Button(
-                        onClick = onMoveUp,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
-                    ) {
-                        Icon(Icons.Default.KeyboardArrowUp, contentDescription = null, tint = Color.Cyan)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Subir Capa")
-                    }
-                    Button(
-                        onClick = onMoveDown,
-                        modifier = Modifier.weight(1f),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
-                    ) {
-                        Icon(Icons.Default.KeyboardArrowDown, contentDescription = null, tint = Color.Cyan)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Bajar Capa")
-                    }
+                },
+                divider = {},
+                modifier = Modifier.padding(horizontal = 8.dp)
+            ) {
+                tabs.forEachIndexed { index, title ->
+                    Tab(
+                        selected = selectedTab == index,
+                        onClick = { selectedTab = index },
+                        text = { 
+                            Text(
+                                title, 
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal
+                            )
+                        }
+                    )
                 }
             }
 
-            // Section 2: Source Selection
-            DialogSection(title = "Fuente de Contenido") {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    SourceCard(
-                        title = "Video",
-                        icon = Icons.Default.PlayArrow,
-                        isSelected = surface.sourceType == SourceType.VIDEO,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onSourceTypeChange(SourceType.VIDEO) }
-                    )
-                    SourceCard(
-                        title = "Shader",
-                        icon = Icons.Default.Settings,
-                        isSelected = surface.sourceType == SourceType.SHADER,
-                        modifier = Modifier.weight(1f),
-                        onClick = { onSourceTypeChange(SourceType.SHADER) }
-                    )
-                }
+            Spacer(modifier = Modifier.height(16.dp))
 
-                if (surface.sourceType == SourceType.VIDEO) {
-                    Spacer(modifier = Modifier.height(12.dp))
-                    Button(
-                        onClick = onPickVideo,
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan.copy(alpha = 0.8f))
-                    ) {
-                        Icon(Icons.Default.Folder, contentDescription = null, tint = Color.Black)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Seleccionar Video", color = Color.Black)
-                    }
-                    surface.videoPath?.let {
-                        Text(
-                            "Archivo: ${it.split("/").last()}",
-                            modifier = Modifier.padding(top = 8.dp),
-                            color = Color.Gray,
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                }
-            }
-
-            // Section 3: Shader Details
-            if (surface.sourceType == SourceType.SHADER) {
-                DialogSection(title = "Biblioteca de Shaders") {
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(12.dp),
-                        contentPadding = PaddingValues(bottom = 12.dp)
-                    ) {
-                        items(shaderRegistry.keys.toList()) { id ->
-                            val selected = surface.shaderId == id
-                            Surface(
-                                onClick = { onShaderIdChange(id) },
-                                color = if (selected) Color.Cyan.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
-                                shape = RoundedCornerShape(12.dp),
-                                border = BorderStroke(1.dp, if (selected) Color.Cyan else Color.Transparent)
-                            ) {
-                                Text(
-                                    id, 
-                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp), 
-                                    color = Color.White, 
-                                    style = MaterialTheme.typography.bodyLarge
+            Box(modifier = Modifier.weight(1f, fill = false).padding(horizontal = 4.dp)) {
+                when (selectedTab) {
+                    0 -> { // Capa (General)
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            // Opacity
+                            Column {
+                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                    Text("Opacidad", color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall)
+                                    Text("${(surface.opacity * 100).toInt()}%", color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Slider(
+                                    value = surface.opacity,
+                                    onValueChange = { 
+                                        isInteracting = true
+                                        onOpacityChange(it) 
+                                    },
+                                    onValueChangeFinished = { isInteracting = false },
+                                    modifier = Modifier.height(30.dp)
                                 )
+                            }
+
+                            // Layer Controls (Order & State)
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column {
+                                    Text("Modo Negro", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                                    Text("Corta la salida visual", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Switch(
+                                    checked = surface.isBlack,
+                                    onCheckedChange = { onToggleBlack() },
+                                    colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan)
+                                )
+                            }
+
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = onMoveUp,
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowUp, null, tint = Color.Cyan)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Subir", style = MaterialTheme.typography.labelSmall)
+                                }
+                                Button(
+                                    onClick = onMoveDown,
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.White.copy(alpha = 0.1f))
+                                ) {
+                                    Icon(Icons.Default.KeyboardArrowDown, null, tint = Color.Cyan)
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Bajar", style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         }
                     }
-
-                    surface.shaderId?.let { shaderId ->
-                        Divider(color = Color.White.copy(alpha = 0.05f), modifier = Modifier.padding(vertical = 12.dp))
-                        Text("Ajustes Precisos", color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.labelMedium)
-                        shaderRegistry[shaderId]?.forEach { param ->
-                            val value = surface.shaderParameters[param] ?: 0.5f
-                            Column(modifier = Modifier.padding(vertical = 8.dp)) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Text(param, color = Color.White.copy(alpha = 0.9f), style = MaterialTheme.typography.bodySmall)
-                                    Text(String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
-                                }
-                                Slider(
-                                    value = value,
-                                    onValueChange = { 
-                                        isInteracting = true
-                                        onParamChange(param, it) 
-                                    },
-                                    onValueChangeFinished = { isInteracting = false },
-                                    colors = SliderDefaults.colors(
-                                        thumbColor = Color.Cyan,
-                                        activeTrackColor = Color.Cyan,
-                                        inactiveTrackColor = Color.Cyan.copy(alpha = 0.2f)
-                                    ),
-                                    modifier = Modifier.height(40.dp)
+                    1 -> { // Contenido
+                        Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SourceCard(
+                                    title = "Video",
+                                    icon = Icons.Default.PlayArrow,
+                                    isSelected = surface.sourceType == SourceType.VIDEO,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onSourceTypeChange(SourceType.VIDEO) }
                                 )
+                                SourceCard(
+                                    title = "Imagen",
+                                    icon = Icons.Default.Image,
+                                    isSelected = surface.sourceType == SourceType.IMAGE,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onSourceTypeChange(SourceType.IMAGE) }
+                                )
+                                SourceCard(
+                                    title = "Shader",
+                                    icon = Icons.Default.Refresh,
+                                    isSelected = surface.sourceType == SourceType.SHADER,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onSourceTypeChange(SourceType.SHADER) }
+                                )
+                            }
+
+                            if (surface.sourceType == SourceType.VIDEO || surface.sourceType == SourceType.IMAGE) {
+                                Button(
+                                    onClick = { if (surface.sourceType == SourceType.VIDEO) onPickVideo() else onPickImage() },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan.copy(alpha = 0.1f))
+                                ) {
+                                    Icon(Icons.Default.Folder, null, tint = Color.Cyan)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Cargar Archivo", color = Color.Cyan)
+                                }
+                            }
+                        }
+                    }
+                    2 -> { // Efectos
+                        if (surface.sourceType == SourceType.SHADER) {
+                            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                                // Shader Selector
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    items(shaderRegistry.keys.toList()) { shaderId ->
+                                        Surface(
+                                            onClick = { onShaderIdChange(shaderId) },
+                                            color = if (surface.shaderId == shaderId) Color.Cyan.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
+                                            shape = RoundedCornerShape(8.dp),
+                                            border = BorderStroke(1.dp, if (surface.shaderId == shaderId) Color.Cyan else Color.White.copy(alpha = 0.1f))
+                                        ) {
+                                            Text(shaderId, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp), color = Color.White, style = MaterialTheme.typography.labelMedium)
+                                        }
+                                    }
+                                }
+
+                                // Parameters
+                                Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                                    surface.shaderId?.let { shaderId ->
+                                        shaderRegistry[shaderId]?.forEach { param ->
+                                            val value = surface.shaderParameters[param] ?: 0.5f
+                                            Column(modifier = Modifier.padding(vertical = 4.dp)) {
+                                                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                                                    Text(param, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall)
+                                                    Text(String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
+                                                }
+                                                Slider(
+                                                    value = value,
+                                                    onValueChange = { 
+                                                        isInteracting = true
+                                                        onParamChange(param, it) 
+                                                    },
+                                                    onValueChangeFinished = { isInteracting = false },
+                                                    modifier = Modifier.height(26.dp)
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // Presets
+                                Text("Presets", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.5f))
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    item {
+                                        Surface(
+                                            onClick = { onSavePreset("Nuevo") },
+                                            color = Color.White.copy(alpha = 0.1f),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Icon(Icons.Default.Add, null, modifier = Modifier.padding(8.dp), tint = Color.Cyan)
+                                        }
+                                    }
+                                    items(shaderPresets) { preset ->
+                                        PresetCard(preset, onClick = { onApplyPreset(preset) }, onDelete = { onDeletePreset(preset.id) })
+                                    }
+                                }
+                            }
+                        } else {
+                            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                Text("Solo disponible para modo Shader", color = Color.Gray)
                             }
                         }
                     }
@@ -1617,6 +1741,40 @@ fun RoleOption(
             Column {
                 Text(title, color = Color.White, style = MaterialTheme.typography.titleMedium)
                 Text(subtitle, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+            }
+        }
+    }
+}
+
+@Composable
+fun PresetCard(
+    preset: ShaderPreset,
+    onClick: () -> Unit,
+    onDelete: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.White.copy(alpha = 0.05f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.1f)),
+        modifier = Modifier.width(120.dp)
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    preset.name,
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = onDelete, modifier = Modifier.size(24.dp)) {
+                    Icon(Icons.Default.Delete, null, tint = Color.Red.copy(alpha = 0.5f), modifier = Modifier.size(16.dp))
+                }
             }
         }
     }

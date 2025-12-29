@@ -62,6 +62,14 @@ data class MappingUiState(
     val executionMode: ExecutionMode = ExecutionMode.SERVER, // Default consolidated
     val connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED,
     val serverIp: String? = null,
+    /*
+    ## 8. Sincronización Avanzada (v1.3.1)
+    - [x] Sincronizar dimensiones de pantalla (screenWidth/Height)
+    - [x] Corregir sincronización de Mover/Borrar/Escalar (Broadcast desde Server)
+    - [x] Fix: Mostrar área real del proyector en el control remoto (v1.3.1)
+    - [x] Fix: Mantener controles visibles en el celular aunque el proyector esté en "Show Mode" (v1.3.1)
+    - [x] Verificación final de interacciones remotas (v1.3.1)
+    */
     val localIp: String? = null,
     val screenWidth: Float = 0f,
     val screenHeight: Float = 0f,
@@ -72,7 +80,10 @@ data class MappingUiState(
     val remoteVersionCode: Int = 0,
     val isUpdatingRemote: Boolean = false,
     val updateProgress: Float = 0f,
-    val showUpdateConfirmation: Boolean = false
+    val showUpdateConfirmation: Boolean = false,
+    val shaderPresets: List<ShaderPreset> = emptyList(), // Phase 2: Presets for current shader
+    val decks: List<MappingDeck> = emptyList(), // Phase 3: Dashboard Grid
+    val activeDeckIndex: Int = 0
 )
 
 enum class ExecutionMode {
@@ -91,13 +102,39 @@ class MappingViewModel @Inject constructor(
     lateinit var renderer: MappingRenderer
 
     // Networking
-    private val networkManager = MappingNetworkManager(this)
+    private val networkManager = com.example.lazyreps.core.network.MappingNetworkManager(this)
     private val discoveryService = MappingDiscoveryService(context)
+    private val prefs = context.getSharedPreferences("mapping_presets", Context.MODE_PRIVATE)
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+
+    val shaderRegistry = mapOf(
+        "MagicRoots" to listOf("u_speed", "u_scale", "u_complexity"),
+        "FireEnergy" to listOf("u_intensity", "u_flicker", "u_flow", "u_scale"),
+        "LeafStorm" to listOf("u_speed", "u_scale", "u_energy"),
+        "MysticFlora" to listOf("u_flow", "u_scale"),
+        "CosmicPollen" to listOf("u_density", "u_scale", "u_flow"),
+        "FriendshipAura" to listOf("u_progress", "u_edgeSoftness", "u_scale"),
+        "Fireworks" to listOf("u_speed", "u_scale"),
+        "AncientPine" to listOf("u_intensity", "u_scale"),
+        "WatcherEyes" to listOf("u_speed", "u_intensity"),
+        "MysticLiquid" to listOf("u_progress", "u_speed", "u_intensity"),
+        
+        // Phase 2 Shaders
+        "PlasmaWaves" to listOf("u_speed", "u_scale", "u_intensity"),
+        "VoronoiCells" to listOf("u_speed", "u_scale", "u_jitter"),
+        "FractalZoom" to listOf("u_zoom", "u_speed", "u_iterations"),
+        "LiquidMetal" to listOf("u_speed", "u_viscosity", "u_reflection"),
+        "NeonGrid" to listOf("u_size", "u_speed", "u_glow"),
+        "StarField" to listOf("u_speed", "u_count", "u_brightness"),
+        "Kaleidoscope" to listOf("u_sides", "u_speed", "u_zoom"),
+        "WaterRipples" to listOf("u_speed", "u_frequency", "u_amplitude"),
+        "AuroraFlow" to listOf("u_speed", "u_intensity", "u_flow"),
+        "GeometricPulse" to listOf("u_speed", "u_size", "u_repetition")
+    )
 
     init {
         loadProjects()
@@ -251,8 +288,30 @@ class MappingViewModel @Inject constructor(
         }
     }
 
+    private fun syncRenderer() {
+        if (::renderer.isInitialized) {
+            val ui = _uiState.value
+            renderer.updateState(MappingState(
+                // En el celular (Cliente), siempre queremos ver las guías para poder editar,
+                // independientemente de si el proyector está en modo SHOW.
+                outputMode = if (ui.executionMode == ExecutionMode.CLIENT) "EDIT" else (if (ui.isProjectionMode) "SHOW" else "EDIT"),
+                surfaces = ui.surfaces,
+                screenWidth = ui.screenWidth,
+                screenHeight = ui.screenHeight,
+                isFullScreen = ui.isFullScreen
+            ))
+        }
+    }
+
     fun initRenderer(renderer: MappingRenderer) {
         this.renderer = renderer
+        renderer.onFrameAvailable = {
+            // No necesitamos hacer nada especial aquí usualmente,
+            // ya que SurfaceTexture informará al renderer automáticamente.
+        }
+        
+        syncRenderer()
+
         renderer.onScreenSizeChanged = { width, height ->
             // En modo Cliente, NO queremos sobrescribir la resolución del servidor con la del celular.
             if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
@@ -267,14 +326,83 @@ class MappingViewModel @Inject constructor(
             }
         }
         // Actualizar el renderer con las superficies cargadas
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         
         // Iniciar reproducción de videos guardados
         playAllVideos()
     }
 
+    fun releaseRenderer() {
+        // Detach players from surfaces preventing decoder crashes
+        players.values.forEach { 
+             it.clearVideoSurface() 
+        }
+        // We don't release the player instance itself, just detach the output
+    }
+
     fun selectSurface(id: String?) {
+        if (id == null) {
+            _uiState.update { it.copy(selectedSurfaceId = null) }
+            return
+        }
+        
+        // Si se toca la misma superficie que ya está seleccionada,
+        // buscar otras superficies en la misma posición y ciclar
+        if (_uiState.value.selectedSurfaceId == id) {
+            val currentSurface = _uiState.value.surfaces.find { it.id == id }
+            if (currentSurface != null) {
+                // Encontrar todas las superficies que se superponen con esta
+                val overlappingSurfaces = findOverlappingSurfaces(currentSurface)
+                
+                if (overlappingSurfaces.size > 1) {
+                    // Ciclar a la siguiente superficie
+                    val currentIndex = overlappingSurfaces.indexOfFirst { it.id == id }
+                    val nextIndex = (currentIndex + 1) % overlappingSurfaces.size
+                    _uiState.update { it.copy(selectedSurfaceId = overlappingSurfaces[nextIndex].id) }
+                    return
+                }
+            }
+        }
+        
+        // Selección normal
         _uiState.update { it.copy(selectedSurfaceId = id) }
+        
+        // Cargar presets si es un shader
+        val surface = _uiState.value.surfaces.find { it.id == id }
+        if (surface?.sourceType == SourceType.SHADER) {
+            surface.shaderId?.let { loadPresetsForShader(it) }
+        }
+    }
+    
+    private fun findOverlappingSurfaces(target: MappingSurface): List<MappingSurface> {
+        // Calcular el centro de la superficie objetivo
+        val centerX = target.corners.filterIndexed { index, _ -> index % 2 == 0 }.average().toFloat()
+        val centerY = target.corners.filterIndexed { index, _ -> index % 2 == 1 }.average().toFloat()
+        
+        // Encontrar todas las superficies que contienen este punto
+        return _uiState.value.surfaces.filter { surface ->
+            isPointInPolygon(centerX, centerY, surface.corners)
+        }
+    }
+    
+    private fun isPointInPolygon(x: Float, y: Float, corners: FloatArray): Boolean {
+        val n = corners.size / 2
+        var inside = false
+        
+        var j = n - 1
+        for (i in 0 until n) {
+            val xi = corners[i * 2]
+            val yi = corners[i * 2 + 1]
+            val xj = corners[j * 2]
+            val yj = corners[j * 2 + 1]
+            
+            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                inside = !inside
+            }
+            j = i
+        }
+        
+        return inside
     }
 
     fun dismissError() {
@@ -392,7 +520,95 @@ class MappingViewModel @Inject constructor(
             texCoords = texCoords
         )
         _uiState.update { it.copy(surfaces = it.surfaces + newSurface) }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun createRandomTestShapes(width: Float, height: Float) {
+        val shapes = MappingShape.values()
+        val shaders = shaderRegistry.keys.toList()
+        val random = kotlin.random.Random
+        
+        // Create 5-8 random shapes
+        val count = random.nextInt(5, 9)
+        
+        for (i in 0 until count) {
+            // Random shape
+            val shape = shapes[random.nextInt(shapes.size)]
+            
+            // Random position and size
+            val size = random.nextFloat() * 0.08f + 0.05f // 0.05 to 0.13
+            val x = random.nextFloat() * 0.8f + 0.1f // 0.1 to 0.9
+            val y = random.nextFloat() * 0.8f + 0.1f
+            
+            // Create shape
+            val corners: FloatArray
+            val texCoords: FloatArray
+            val aspect = width / height
+            
+            when (shape) {
+                MappingShape.SQUARE, MappingShape.QUAD -> {
+                    val halfW = size
+                    val halfH = size * aspect
+                    corners = floatArrayOf(
+                        x - halfW, y - halfH,
+                        x + halfW, y - halfH,
+                        x + halfW, y + halfH,
+                        x - halfW, y + halfH
+                    )
+                    texCoords = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+                }
+                MappingShape.RECTANGLE -> {
+                    val halfW = size * 1.5f
+                    val halfH = size * 0.75f * aspect
+                    corners = floatArrayOf(
+                        x - halfW, y - halfH,
+                        x + halfW, y - halfH,
+                        x + halfW, y + halfH,
+                        x - halfW, y + halfH
+                    )
+                    texCoords = floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+                }
+                MappingShape.TRIANGLE -> {
+                    val halfW = size
+                    val halfH = size * aspect
+                    corners = floatArrayOf(
+                        x, y - halfH,
+                        x + halfW, y + halfH,
+                        x - halfW, y + halfH
+                    )
+                    texCoords = floatArrayOf(0.5f, 0f, 1f, 1f, 0f, 1f)
+                }
+                MappingShape.CIRCLE -> {
+                    val segments = 16
+                    corners = FloatArray(segments * 2)
+                    texCoords = FloatArray(segments * 2)
+                    for (j in 0 until segments) {
+                        val angle = (2.0 * Math.PI * j / segments).toFloat()
+                        val cos = Math.cos(angle.toDouble()).toFloat()
+                        val sin = Math.sin(angle.toDouble()).toFloat()
+                        corners[j * 2] = x + cos * size
+                        corners[j * 2 + 1] = y + sin * size * aspect
+                        texCoords[j * 2] = 0.5f + cos * 0.5f
+                        texCoords[j * 2 + 1] = 0.5f + sin * 0.5f
+                    }
+                }
+            }
+            
+            // Random shader
+            val randomShader = shaders[random.nextInt(shaders.size)]
+            
+            val newSurface = MappingSurface(
+                corners = corners,
+                texCoords = texCoords,
+                sourceType = SourceType.SHADER,
+                shaderId = randomShader
+            )
+            
+            _uiState.update { it.copy(surfaces = it.surfaces + newSurface) }
+        }
+        
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -422,7 +638,7 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updatedSurfaces)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -456,7 +672,7 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updatedSurfaces)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -474,7 +690,7 @@ class MappingViewModel @Inject constructor(
                 selectedSurfaceId = if (state.selectedSurfaceId == id) null else state.selectedSurfaceId
             )
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -502,7 +718,7 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updatedSurfaces)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -521,7 +737,7 @@ class MappingViewModel @Inject constructor(
                 state.copy(surfaces = updated)
             } else state
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -540,7 +756,7 @@ class MappingViewModel @Inject constructor(
                 state.copy(surfaces = updated)
             } else state
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -556,7 +772,7 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updated)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -570,6 +786,291 @@ class MappingViewModel @Inject constructor(
             val prefs = context.getSharedPreferences("mapping_prefs", Context.MODE_PRIVATE)
             prefs.edit().putString("last_visited_dir", path).apply()
         }
+    }
+
+    // Phase 1: Foundation Features Functions
+    fun setOpacity(id: String, opacity: Float, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetOpacity(id, opacity))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(opacity = opacity.coerceIn(0f, 1f)) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun toggleVisibility(id: String, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.ToggleVisibility(id))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(isVisible = !it.isVisible) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun setLayerName(id: String, name: String, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetLayerName(id, name))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(name = name) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        saveCurrentState()
+    }
+
+    fun rotateSurface(id: String, rotation: Float, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.RotateSurface(id, rotation))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(rotation = rotation) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun flipSurface(id: String, horizontal: Boolean, vertical: Boolean, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.FlipSurface(id, horizontal, vertical))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) {
+                    // Apply flip by inverting texture coordinates
+                    val newTexCoords = it.texCoords.copyOf()
+                    if (horizontal) {
+                        // Swap U coordinates (horizontal flip)
+                        for (i in 0 until newTexCoords.size / 2) {
+                            newTexCoords[i * 2] = 1f - newTexCoords[i * 2]
+                        }
+                    }
+                    if (vertical) {
+                        // Swap V coordinates (vertical flip)
+                        for (i in 0 until newTexCoords.size / 2) {
+                            newTexCoords[i * 2 + 1] = 1f - newTexCoords[i * 2 + 1]
+                        }
+                    }
+                    it.copy(
+                        flipHorizontal = horizontal,
+                        flipVertical = vertical,
+                        texCoords = newTexCoords
+                    )
+                } else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    // Phase 2: Content & Effects Functions
+    fun setLayerPlayState(id: String, isPlaying: Boolean, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetLayerPlayState(id, isPlaying))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(isPlaying = isPlaying) else it
+            }
+            state.copy(surfaces = updated)
+        }
+
+        // Apply to ExoPlayer if it's the server/standalone
+        if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
+            viewModelScope.launch(Dispatchers.Main) {
+                val player = players[id]
+                if (isPlaying) player?.play() else player?.pause()
+            }
+        }
+        
+        saveCurrentState()
+    }
+
+    fun setPlaybackSpeed(id: String, speed: Float, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetPlaybackSpeed(id, speed))
+            return
+        }
+
+        val clampedSpeed = speed.coerceIn(0.25f, 2.0f)
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(playbackSpeed = clampedSpeed) else it
+            }
+            state.copy(surfaces = updated)
+        }
+
+        // Apply to ExoPlayer
+        if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
+            viewModelScope.launch(Dispatchers.Main) {
+                players[id]?.setPlaybackSpeed(clampedSpeed)
+            }
+        }
+        
+        saveCurrentState()
+    }
+
+    fun setImageForSurface(id: String, path: String, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetImagePath(id, path))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) it.copy(
+                    imagePath = path,
+                    sourceType = SourceType.IMAGE
+                ) else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun setShaderForSurface(id: String, shaderId: String, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetShaderId(id, shaderId))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == id) {
+                    it.copy(
+                        sourceType = SourceType.SHADER,
+                        shaderId = shaderId,
+                        shaderParameters = shaderRegistry[shaderId]?.associateWith { 0.5f } ?: emptyMap()
+                    )
+                } else it
+            }
+            state.copy(surfaces = updated)
+        }
+        loadPresetsForShader(shaderId)
+        syncRenderer()
+        saveCurrentState()
+    }
+
+    fun updateShaderParameter(surfaceId: String, paramName: String, value: Float, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.UpdateShaderParameter(surfaceId, paramName, value))
+            return
+        }
+
+        _uiState.update { state ->
+            val updated = state.surfaces.map {
+                if (it.id == surfaceId) {
+                    val newParams = it.shaderParameters.toMutableMap()
+                    newParams[paramName] = value
+                    it.copy(shaderParameters = newParams)
+                } else it
+            }
+            state.copy(surfaces = updated)
+        }
+        syncRenderer()
+    }
+
+    fun saveShaderPreset(shaderId: String, name: String, params: Map<String, Float>) {
+        val newPreset = ShaderPreset(
+            shaderId = shaderId,
+            name = name,
+            parameters = params
+        )
+        
+        val presets = getAllPresets().toMutableList()
+        presets.add(newPreset)
+        savePresetsToPrefs(presets)
+        
+        // Refresh UI state for currently selected surface if it has this shader
+        loadPresetsForShader(shaderId)
+    }
+
+    fun loadPresetsForShader(shaderId: String) {
+        val all = getAllPresets()
+        val filtered = all.filter { it.shaderId == shaderId }
+        _uiState.update { it.copy(shaderPresets = filtered) }
+    }
+
+    fun applyShaderPreset(surfaceId: String, preset: ShaderPreset) {
+        preset.parameters.forEach { (name, value) ->
+            dispatchCommand(MappingCommand.UpdateShaderParameter(surfaceId, name, value))
+        }
+    }
+
+    fun deleteShaderPreset(id: String, shaderId: String) {
+        val presets = getAllPresets().toMutableList()
+        presets.removeAll { it.id == id }
+        savePresetsToPrefs(presets)
+        loadPresetsForShader(shaderId)
+    }
+
+    private fun getAllPresets(): List<ShaderPreset> {
+        val json = prefs.getString("presets_list", "[]") ?: "[]"
+        return try {
+            val array = JSONArray(json)
+            List(array.length()) { i ->
+                val obj = array.getJSONObject(i)
+                val paramsObj = obj.getJSONObject("parameters")
+                val params = mutableMapOf<String, Float>()
+                paramsObj.keys().forEach { key ->
+                    params[key] = paramsObj.getDouble(key).toFloat()
+                }
+                ShaderPreset(
+                    id = obj.getString("id"),
+                    shaderId = obj.getString("shaderId"),
+                    name = obj.getString("name"),
+                    parameters = params,
+                    createdAt = obj.getLong("createdAt")
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun savePresetsToPrefs(presets: List<ShaderPreset>) {
+        val array = JSONArray()
+        presets.forEach { preset ->
+            val obj = JSONObject().apply {
+                put("id", preset.id)
+                put("shaderId", preset.shaderId)
+                put("name", preset.name)
+                put("createdAt", preset.createdAt)
+                val paramsObj = JSONObject()
+                preset.parameters.forEach { (k, v) -> paramsObj.put(k, v.toDouble()) }
+                put("parameters", paramsObj)
+            }
+            array.put(obj)
+        }
+        prefs.edit().putString("presets_list", array.toString()).apply()
     }
 
     fun processCommand(command: MappingCommand) {
@@ -608,17 +1109,74 @@ class MappingViewModel @Inject constructor(
             is MappingCommand.SetOutputMode -> {
                 val isShow = command.mode == "SHOW"
                 _uiState.update { it.copy(isProjectionMode = isShow) }
+                if (::renderer.isInitialized) {
+                    renderer.updateState(MappingState(
+                        outputMode = command.mode,
+                        surfaces = _uiState.value.surfaces
+                    ))
+                }
                 saveCurrentState()
             }
             is MappingCommand.ToggleFullScreen -> {
                 _uiState.update { it.copy(isFullScreen = command.isEnabled) }
                 // Propagar si es necesario, pero toggleFullScreen ya despacha
             }
-            is MappingCommand.ClearAll -> {
-                clearAll(true)
+            is MappingCommand.FlipSurface,
+            is MappingCommand.SetLayerPlayState,
+            is MappingCommand.SetPlaybackSpeed,
+            is MappingCommand.SetImagePath,
+            is MappingCommand.TriggerClip,
+            is MappingCommand.SetActiveDeck -> {
+                networkManager.sendCommand(command)
             }
-            is MappingCommand.RemoveSurface -> {
-                removeSurface(command.surfaceId, true)
+            
+            is MappingCommand.SetSourceType -> {
+                _uiState.update { state ->
+                    val updated = state.surfaces.map {
+                        if (it.id == command.surfaceId) {
+                            var newSurface = it.copy(sourceType = command.sourceType)
+                            if (command.sourceType == SourceType.SHADER && newSurface.shaderId == null) {
+                                newSurface = newSurface.copy(shaderId = "MagicRoots")
+                            }
+                            newSurface
+                        } else it
+                    }
+                    state.copy(surfaces = updated)
+                }
+                syncRenderer()
+                saveCurrentState()
+            }
+            is MappingCommand.SetShaderId -> {
+                val newShaderId = command.shaderId
+                _uiState.update { state ->
+                    val updated = state.surfaces.map {
+                        if (it.id == command.surfaceId) {
+                            it.copy(
+                                shaderId = newShaderId,
+                                shaderParameters = shaderRegistry[newShaderId]?.associateWith { 0.5f } ?: emptyMap()
+                            )
+                        } else it
+                    }
+                    state.copy(surfaces = updated)
+                }
+                loadPresetsForShader(newShaderId) // Load presets for the new shader
+                syncRenderer()
+                saveCurrentState()
+            }
+            is MappingCommand.UpdateShaderParameter -> {
+                _uiState.update { state ->
+                    val updated = state.surfaces.map {
+                        if (it.id == command.surfaceId) {
+                            val newParams = it.shaderParameters.toMutableMap()
+                            newParams[command.paramName] = command.value
+                            it.copy(shaderParameters = newParams)
+                        } else it
+                    }
+                    state.copy(surfaces = updated)
+                }
+                syncRenderer()
+                // Don't save on every param update to avoid too much I/O, 
+                // but sync renderer is enough for real-time visual.
             }
 
             is MappingCommand.SetVideoPath -> {
@@ -636,7 +1194,7 @@ class MappingViewModel @Inject constructor(
                     }
                     state.copy(surfaces = updated)
                 }
-                renderer.updateSurfaces(_uiState.value.surfaces)
+                syncRenderer()
                 
                 // Asegurar ejecución en Main thread para ExoPlayer
                 viewModelScope.launch(Dispatchers.Main) {
@@ -659,6 +1217,14 @@ class MappingViewModel @Inject constructor(
                 val myVersion = com.example.lazyreps.BuildConfig.VERSION_CODE
                 val myVersionName = com.example.lazyreps.BuildConfig.VERSION_NAME
                 dispatchCommand(MappingCommand.ServerHello(myVersion, myVersionName))
+                
+                // Also send current state to the new client
+                if (_uiState.value.executionMode == ExecutionMode.SERVER) {
+                    val currentState = MappingState.fromJSON(getCurrentStateJson())
+                    if (currentState != null) {
+                        networkManager.sendState(currentState)
+                    }
+                }
             }
             is MappingCommand.ServerHello -> {
                 Log.d("MappingViewModel", "Server handshake received: v${command.versionName}")
@@ -677,6 +1243,46 @@ class MappingViewModel @Inject constructor(
                     _uiState.update { it.copy(showUpdateConfirmation = true) }
                 }
             }
+            
+            // Phase 1: Foundation Features Handlers
+            is MappingCommand.SetOpacity -> {
+                setOpacity(command.surfaceId, command.opacity, fromRemote = true)
+            }
+            is MappingCommand.ToggleVisibility -> {
+                toggleVisibility(command.surfaceId, fromRemote = true)
+            }
+            is MappingCommand.SetLayerName -> {
+                setLayerName(command.surfaceId, command.name, fromRemote = true)
+            }
+            is MappingCommand.RotateSurface -> {
+                rotateSurface(command.surfaceId, command.rotation, fromRemote = true)
+            }
+            is MappingCommand.FlipSurface -> {
+                flipSurface(command.surfaceId, command.horizontal, command.vertical, fromRemote = true)
+            }
+            
+            // Phase 2: Content & Effects Handlers
+            is MappingCommand.SetLayerPlayState -> {
+                setLayerPlayState(command.surfaceId, command.isPlaying, fromRemote = true)
+            }
+            is MappingCommand.SetPlaybackSpeed -> {
+                setPlaybackSpeed(command.surfaceId, command.speed, fromRemote = true)
+            }
+            is MappingCommand.SetImagePath -> {
+                setImageForSurface(command.surfaceId, command.imagePath, fromRemote = true)
+            }
+            is MappingCommand.SetImagePath -> {
+                setImageForSurface(command.surfaceId, command.imagePath, fromRemote = true)
+            }
+            is MappingCommand.TriggerClip -> {
+                triggerClip(command.surfaceId, command.clip, fromRemote = true)
+            }
+            is MappingCommand.SetActiveDeck -> {
+                setActiveDeck(command.deckIndex, fromRemote = true)
+            }
+            else -> {
+                Log.d("MappingViewModel", "Unhandled command: ${command.toJSONObject()}")
+            }
         }
     }
 
@@ -693,29 +1299,23 @@ class MappingViewModel @Inject constructor(
 
     internal fun syncFullState(json: String) {
         try {
-            // Manual deserialization or use MappingState if possible
-            val surfaces = MappingState.fromJSON(json)?.surfaces ?: emptyList()
-            val obj = org.json.JSONObject(json)
-            val mode = obj.optString("outputMode", "EDIT")
-            val width = obj.optDouble("screenWidth", 0.0).toFloat()
-            val height = obj.optDouble("screenHeight", 0.0).toFloat()
-            val fullScreen = obj.optBoolean("isFullScreen", false)
-
+            val state = MappingState.fromJSON(json) ?: return
+            
             _uiState.update { 
                 it.copy(
-                    surfaces = surfaces,
-                    isProjectionMode = mode == "SHOW",
-                    screenWidth = width,
-                    screenHeight = height,
-                    isFullScreen = fullScreen
+                    surfaces = state.surfaces,
+                    isProjectionMode = state.outputMode == "SHOW",
+                    screenWidth = state.screenWidth,
+                    screenHeight = state.screenHeight,
+                    isFullScreen = state.isFullScreen
                 )
             }
             if (::renderer.isInitialized) {
-                renderer.updateSurfaces(surfaces)
+                renderer.updateState(state)
             }
             // setup players for all surfaces (Must be on Main thread)
             viewModelScope.launch {
-                surfaces.forEach {
+                state.surfaces.forEach {
                     it.videoPath?.let { path -> setupPlayer(it.id, Uri.parse(path)) }
                 }
             }
@@ -724,33 +1324,25 @@ class MappingViewModel @Inject constructor(
         }
     }
 
+
+
     fun getCurrentStateJson(): String {
-        // Use MappingState as the base
+        val ui = _uiState.value
         val state = MappingState(
-             outputMode = if (_uiState.value.isProjectionMode) "SHOW" else "EDIT",
-             surfaces = _uiState.value.surfaces
+             outputMode = if (ui.isProjectionMode) "SHOW" else "EDIT",
+             surfaces = ui.surfaces,
+             screenWidth = ui.screenWidth,
+             screenHeight = ui.screenHeight,
+             isFullScreen = ui.isFullScreen
         )
-        val stateJson = state.toJSON()
-        
-        // Add extra fields not in MappingState (like screen dimensions)
-        return try {
-            val stateObj = org.json.JSONObject(stateJson)
-            stateObj.put("screenWidth", _uiState.value.screenWidth)
-            stateObj.put("screenHeight", _uiState.value.screenHeight)
-            stateObj.put("isFullScreen", _uiState.value.isFullScreen)
-            stateObj.put("type", "FULL_STATE")
-            stateObj.toString()
-        } catch (e: Exception) {
-            Log.e("MappingViewModel", "Error creating full state JSON", e)
-            stateJson // Fallback
-        }
+        return state.toJSON()
     }
 
 
 
     @OptIn(UnstableApi::class)
-    fun setVideoForSurface(id: String, uri: Uri) {
-        if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+    fun setVideoForSurface(id: String, uri: Uri, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
             uploadVideoToServer(id, uri)
             return
         }
@@ -778,7 +1370,7 @@ class MappingViewModel @Inject constructor(
                 }
                 state.copy(surfaces = updatedSurfaces)
             }
-            renderer.updateSurfaces(_uiState.value.surfaces)
+            syncRenderer()
             
             setupPlayer(id, resolvedUri)
             saveCurrentState()
@@ -791,7 +1383,7 @@ class MappingViewModel @Inject constructor(
 
     private fun uploadVideoToServer(surfaceId: String, uri: Uri) {
         val serverIp = _uiState.value.serverIp ?: return
-        if (serverIp == "Searching..." || serverIp == "Local Server") return
+        if (serverIp == "Searching..." || serverIp == "Local Server" || serverIp == "Not found") return
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -838,7 +1430,7 @@ class MappingViewModel @Inject constructor(
 
     fun fetchRemoteLibrary() {
         val serverIp = _uiState.value.serverIp ?: return
-        if (serverIp == "Searching..." || serverIp == "Local Server") return
+        if (serverIp == "Searching..." || serverIp == "Local Server" || serverIp == "Not found") return
 
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -954,7 +1546,7 @@ class MappingViewModel @Inject constructor(
                 renderer.triggerCallbacksForExistingSurfaces()
                 
                 // ADICIONAL: Forzar actualización del renderer para asegurar visibilidad
-                renderer.updateSurfaces(_uiState.value.surfaces)
+                syncRenderer()
             }
         }
     }
@@ -976,7 +1568,7 @@ class MappingViewModel @Inject constructor(
                     override fun onPlaybackStateChanged(playbackState: Int) {
                         if (playbackState == Player.STATE_READY) {
                             // Video listo. Actualizamos surfaces para quitar pantalla negra.
-                            renderer.updateSurfaces(_uiState.value.surfaces)
+                            syncRenderer()
                         }
                     }
                     
@@ -1013,7 +1605,7 @@ class MappingViewModel @Inject constructor(
                         player.repeatMode = Player.REPEAT_MODE_ONE
                         player.prepare()
                         player.play() 
-                        renderer.updateSurfaces(_uiState.value.surfaces)
+                        syncRenderer()
                     } catch (t: Throwable) {
                         Log.e("MappingViewModel", "Error inside surface callback for $id: ${t.message}", t)
                     }
@@ -1123,7 +1715,7 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updatedSurfaces)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
@@ -1146,43 +1738,154 @@ class MappingViewModel @Inject constructor(
             }
             state.copy(surfaces = updatedSurfaces)
         }
-        renderer.updateSurfaces(_uiState.value.surfaces)
+        syncRenderer()
         saveCurrentState()
     }
 
 
     private fun saveCurrentState() {
         viewModelScope.launch(Dispatchers.IO) {
-            val surfaces = _uiState.value.surfaces
+            val ui = _uiState.value
+            val state = MappingState(
+                outputMode = if (ui.isProjectionMode) "SHOW" else "EDIT",
+                surfaces = ui.surfaces,
+                screenWidth = ui.screenWidth,
+                screenHeight = ui.screenHeight,
+                isFullScreen = ui.isFullScreen,
+                decks = ui.decks,
+                activeDeckIndex = ui.activeDeckIndex
+            )
             val prefs = context.getSharedPreferences("mapping_prefs", Context.MODE_PRIVATE)
-            val json = serializeSurfaces(surfaces)
-            prefs.edit().putString("current_surfaces_json", json).apply()
+            prefs.edit().putString("current_full_state_json", state.toJSON()).apply()
         }
     }
 
     private fun loadCurrentState() {
         val prefs = context.getSharedPreferences("mapping_prefs", Context.MODE_PRIVATE)
-        val json = prefs.getString("current_surfaces_json", null)
+        
+        // Try new full state key first, fallback to old surfaces key
+        val fullJson = prefs.getString("current_full_state_json", null)
+        val oldJson = prefs.getString("current_surfaces_json", null)
+        
         try {
-            val surfaces = if (json != null) deserializeSurfaces(json) else emptyList()
+            val state = if (fullJson != null) {
+                MappingState.fromJSON(fullJson)
+            } else if (oldJson != null) {
+                MappingState(surfaces = deserializeSurfaces(oldJson))
+            } else null
+
             val lastDir = prefs.getString("last_visited_dir", null)
             val modeStr = prefs.getString("execution_mode", ExecutionMode.SERVER.name)
             val mode = try { ExecutionMode.valueOf(modeStr ?: ExecutionMode.SERVER.name) } catch(e: Exception) { ExecutionMode.SERVER }
             
-            _uiState.update { it.copy(
-                surfaces = surfaces, 
-                lastVisitedDirectory = lastDir,
-                executionMode = mode
-            ) }
-            
-            // Si ya hay renderer, iniciar videos
-            if (::renderer.isInitialized) {
-                renderer.updateSurfaces(surfaces)
-                playAllVideos()
+            if (state != null) {
+                val finalDecks = if (state.decks.isEmpty()) createDefaultDecks() else state.decks
+                _uiState.update { it.copy(
+                    surfaces = state.surfaces,
+                    screenWidth = state.screenWidth,
+                    screenHeight = state.screenHeight,
+                    isFullScreen = state.isFullScreen,
+                    decks = finalDecks,
+                    activeDeckIndex = state.activeDeckIndex,
+                    lastVisitedDirectory = lastDir,
+                    executionMode = mode
+                ) }
+                
+                // Si ya hay renderer, iniciar videos
+                if (::renderer.isInitialized) {
+                    renderer.updateSurfaces(state.surfaces)
+                    playAllVideos()
+                }
+            } else {
+                // Initial state
+                _uiState.update { it.copy(
+                    decks = createDefaultDecks(),
+                    lastVisitedDirectory = lastDir,
+                    executionMode = mode
+                ) }
             }
         } catch (e: Exception) {
             Log.e("MappingViewModel", "Error loading state", e)
         }
+    }
+
+    private fun createDefaultDecks(): List<MappingDeck> {
+        return listOf(
+            MappingDeck(name = "Visuals 1"),
+            MappingDeck(name = "FX 1"),
+            MappingDeck(name = "Backgrounds")
+        )
+    }
+
+    fun triggerClip(surfaceId: String, clip: MappingClip, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.TriggerClip(surfaceId, clip))
+            return
+        }
+
+        when (clip.sourceType) {
+            SourceType.VIDEO -> {
+                clip.path?.let { setVideoForSurface(surfaceId, Uri.parse(it), fromRemote = true) }
+            }
+            SourceType.IMAGE -> {
+                clip.path?.let { setImageForSurface(surfaceId, it, fromRemote = true) }
+            }
+            SourceType.SHADER -> {
+                setShaderForSurface(surfaceId, clip.path ?: "MagicRoots", fromRemote = true)
+                clip.shaderParameters.forEach { (name, value) ->
+                    updateShaderParameter(surfaceId, name, value, fromRemote = true)
+                }
+            }
+        }
+        
+        // Special case: if we are server, we should probably update our local surfaces and sync
+        if (_uiState.value.executionMode == ExecutionMode.SERVER || _uiState.value.executionMode == ExecutionMode.STANDALONE) {
+            syncRenderer()
+            saveCurrentState()
+        }
+    }
+
+    fun setActiveDeck(index: Int, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.SetActiveDeck(index))
+            return
+        }
+        _uiState.update { it.copy(activeDeckIndex = index) }
+        saveCurrentState()
+    }
+
+    fun saveCurrentStateToClip(surfaceId: String, slotIndex: Int) {
+        val ui = _uiState.value
+        val surface = ui.surfaces.find { it.id == surfaceId } ?: return
+        
+        val newClip = MappingClip(
+            name = when(surface.sourceType) {
+                SourceType.VIDEO -> surface.videoPath?.split("/")?.lastOrNull() ?: "Video"
+                SourceType.SHADER -> surface.shaderId ?: "Shader"
+                SourceType.IMAGE -> surface.imagePath?.split("/")?.lastOrNull() ?: "Image"
+            },
+            sourceType = surface.sourceType,
+            path = when(surface.sourceType) {
+                SourceType.VIDEO -> surface.videoPath
+                SourceType.SHADER -> surface.shaderId
+                SourceType.IMAGE -> surface.imagePath
+            },
+            shaderParameters = surface.shaderParameters.toMap()
+        )
+
+        _uiState.update { state ->
+            val updatedDecks = state.decks.mapIndexed { index, deck ->
+                if (index == state.activeDeckIndex) {
+                    val currentClips = deck.layerClips[surfaceId]?.toMutableList() ?: MutableList<MappingClip?>(8) { null }
+                    // Asegurar que la lista tiene al menos slotIndex + 1 elementos
+                    while (currentClips.size <= slotIndex) currentClips.add(null)
+                    currentClips[slotIndex] = newClip
+                    deck.copy(layerClips = deck.layerClips + (surfaceId to currentClips))
+                } else deck
+            }
+            state.copy(decks = updatedDecks)
+        }
+        saveCurrentState()
     }
 
     private fun saveProjects() {
@@ -1225,91 +1928,11 @@ class MappingViewModel @Inject constructor(
     }
 
     private fun serializeSurfaces(surfaces: List<MappingSurface>): String {
-        Log.d("MappingViewModel", "serializeSurfaces: Serializing ${surfaces.size} surfaces")
-        val array = JSONArray()
-        surfaces.forEach { surface ->
-            val videoPathString = surface.videoPath
-            Log.d("MappingViewModel", "  Serializing surface ${surface.id}: videoPath = $videoPathString")
-            val obj = JSONObject().apply {
-                put("id", surface.id)
-                put("videoPath", videoPathString)
-                put("isBlack", surface.isBlack)
-                
-                val cornersArray = JSONArray()
-                surface.corners.forEach { cornersArray.put(it.toDouble()) }
-                put("corners", cornersArray)
-                
-                val texArray = JSONArray()
-                surface.texCoords.forEach { texArray.put(it.toDouble()) }
-                put("texCoords", texArray)
-
-                val holesArray = JSONArray()
-                surface.holes.forEach { hole ->
-                    val holeArray = JSONArray()
-                    hole.forEach { holeArray.put(it.toDouble()) }
-                    holesArray.put(holeArray)
-                }
-                put("holes", holesArray)
-            }
-            array.put(obj)
-        }
-        val result = array.toString()
-        Log.d("MappingViewModel", "serializeSurfaces: Result length = ${result.length}")
-        return result
+        return MappingState(surfaces = surfaces).toJSON()
     }
 
     private fun deserializeSurfaces(json: String): List<MappingSurface> {
-        Log.d("MappingViewModel", "deserializeSurfaces: Input JSON length = ${json.length}")
-        val array = JSONArray(json)
-        val parsedSurfaces = mutableListOf<MappingSurface>()
-        for (i in 0 until array.length()) {
-            val obj = array.getJSONObject(i)
-            val surfaceId = obj.getString("id")
-            // Support both keys for migration/fallback
-            val videoUriString = if (obj.has("videoPath")) obj.optString("videoPath", "") else obj.optString("videoUri", "")
-            val isBlack = obj.optBoolean("isBlack", false)
-            Log.d("MappingViewModel", "  Deserializing surface $surfaceId: videoPath string = '$videoUriString', isBlack = $isBlack")
-            
-            val cornersArray = obj.getJSONArray("corners")
-            val corners = FloatArray(cornersArray.length())
-            for (j in 0 until cornersArray.length()) corners[j] = cornersArray.getDouble(j).toFloat()
-            
-            val texArray = obj.optJSONArray("texCoords")
-            val tex = if (texArray != null) {
-                FloatArray(texArray.length()) { texArray.getDouble(it).toFloat() }
-            } else {
-                floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
-            }
-
-            val holesList = mutableListOf<FloatArray>()
-            val holesArray = obj.optJSONArray("holes")
-            if (holesArray != null) {
-                for (j in 0 until holesArray.length()) {
-                    val holeArr = holesArray.getJSONArray(j)
-                    val hole = FloatArray(holeArr.length()) { holeArr.getDouble(it).toFloat() }
-                    holesList.add(hole)
-                }
-            }
-            
-            val parsedUri = videoUriString.takeIf { it.isNotEmpty() && it != "null" }?.let { str ->
-                if (str.startsWith("/") || str.startsWith("file:")) {
-                    Uri.fromFile(java.io.File(str.removePrefix("file://")))
-                } else {
-                    Uri.parse(str)
-                }
-            }
-
-            val surface = MappingSurface(
-                id = surfaceId,
-                videoPath = parsedUri?.toString(),
-                isBlack = isBlack,
-                corners = corners,
-                texCoords = tex,
-                holes = holesList
-            )
-            parsedSurfaces.add(surface)
-        }
-        return parsedSurfaces
+        return MappingState.fromJSON(json)?.surfaces ?: emptyList()
     }
 
     private fun startSelfUpdate(serverIp: String) {
