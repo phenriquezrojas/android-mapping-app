@@ -44,7 +44,16 @@ data class MappingSurface(
     val flipVertical: Boolean = false, // Mirror vertically
     // Phase 2: Content & Effects
     val isPlaying: Boolean = true, // Per-layer playback state
-    val playbackSpeed: Float = 1.0f // Video playback speed (0.25x - 2.0x)
+    val playbackSpeed: Float = 1.0f, // Video playback speed (0.25x - 2.0x)
+    
+    // Phase 3: Multi-Layer System (3 simultaneous effects)
+    // These slots allow up to 3 effects to be active simultaneously:
+    // - backgroundsSlot: Applied first (base layer)
+    // - visualsSlot: Applied second (middle layer)
+    // - fxSlot: Applied last (top layer)
+    val backgroundsSlot: EffectSlot? = null,
+    val visualsSlot: EffectSlot? = null,
+    val fxSlot: EffectSlot? = null
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -64,6 +73,9 @@ data class MappingSurface(
         if (isPlaying != other.isPlaying) return false
         if (playbackSpeed != other.playbackSpeed) return false
         if (imagePath != other.imagePath) return false
+        if (backgroundsSlot != other.backgroundsSlot) return false
+        if (visualsSlot != other.visualsSlot) return false
+        if (fxSlot != other.fxSlot) return false
         
         // Deep check for holes
         if (holes.size != other.holes.size) return false
@@ -91,6 +103,9 @@ data class MappingSurface(
         result = 31 * result + isPlaying.hashCode()
         result = 31 * result + playbackSpeed.hashCode()
         result = 31 * result + (imagePath?.hashCode() ?: 0)
+        result = 31 * result + (backgroundsSlot?.hashCode() ?: 0)
+        result = 31 * result + (visualsSlot?.hashCode() ?: 0)
+        result = 31 * result + (fxSlot?.hashCode() ?: 0)
         // Deep hash for holes
         holes.forEach { hole ->
             result = 31 * result + hole.contentHashCode()

@@ -53,6 +53,35 @@ data class MappingState(
                     val texArray = JSONArray()
                     surface.texCoords.forEach { texArray.put(it.toDouble()) }
                     put("texCoords", texArray)
+                    
+                    // Multi-layer slots serialization
+                    surface.backgroundsSlot?.let { slot ->
+                        put("backgroundsSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
+                    surface.visualsSlot?.let { slot ->
+                        put("visualsSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
+                    surface.fxSlot?.let { slot ->
+                        put("fxSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
                 }
                 surfacesArray.put(sObj)
             }
@@ -146,6 +175,49 @@ data class MappingState(
                     val texArr = sObj.getJSONArray("texCoords")
                     val texCoords = FloatArray(texArr.length()) { texArr.getDouble(it).toFloat() }
                     
+                    // Multi-layer slots deserialization (backward compatible)
+                    val backgroundsSlot = if (sObj.has("backgroundsSlot")) {
+                        val slotObj = sObj.getJSONObject("backgroundsSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            shaderParameters = slotParams
+                        )
+                    } else null
+                    
+                    val visualsSlot = if (sObj.has("visualsSlot")) {
+                        val slotObj = sObj.getJSONObject("visualsSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            shaderParameters = slotParams
+                        )
+                    } else null
+                    
+                    val fxSlot = if (sObj.has("fxSlot")) {
+                        val slotObj = sObj.getJSONObject("fxSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            shaderParameters = slotParams
+                        )
+                    } else null
+                    
                     surfaces.add(MappingSurface(
                         id = id,
                         videoPath = cleanVideoPath,
@@ -163,7 +235,10 @@ data class MappingState(
                         playbackSpeed = playbackSpeed,
                         imagePath = imagePath,
                         corners = corners,
-                        texCoords = texCoords
+                        texCoords = texCoords,
+                        backgroundsSlot = backgroundsSlot,
+                        visualsSlot = visualsSlot,
+                        fxSlot = fxSlot
                     ))
                 }
                 

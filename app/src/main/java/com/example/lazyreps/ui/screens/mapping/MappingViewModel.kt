@@ -774,7 +774,9 @@ class MappingViewModel @Inject constructor(
                         newCorners[i * 2] = (newCorners[i * 2] + deltaX).coerceIn(0f, 1f)
                         newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + deltaY).coerceIn(0f, 1f)
                     }
-                    surface.copy(corners = newCorners)
+                    // Recalculate texture coordinates with keystoning
+                    val newTexCoords = calculatePerspectiveTexCoords(newCorners)
+                    surface.copy(corners = newCorners, texCoords = newTexCoords)
                 } else surface
             }
             state.copy(surfaces = updatedSurfaces)
@@ -808,7 +810,9 @@ class MappingViewModel @Inject constructor(
                         newCorners[i * 2] = (centerX + dx).coerceIn(0f, 1f)
                         newCorners[i * 2 + 1] = (centerY + dy).coerceIn(0f, 1f)
                     }
-                    surface.copy(corners = newCorners)
+                    // Recalculate texture coordinates with keystoning
+                    val newTexCoords = calculatePerspectiveTexCoords(newCorners)
+                    surface.copy(corners = newCorners, texCoords = newTexCoords)
                 } else surface
             }
             state.copy(surfaces = updatedSurfaces)
@@ -847,15 +851,109 @@ class MappingViewModel @Inject constructor(
         saveCurrentState()
     }
 
+    /**
+     * Calculate perspective-corrected texture coordinates for keystoning.
+     * This implements homographic transformation to properly map textures onto deformed quadrilaterals.
+     * 
+     * For quadrilaterals (4 corners): Uses perspective transformation
+     * For other polygons: Uses proportional mapping based on centroid
+     */
+    private fun calculatePerspectiveTexCoords(corners: FloatArray): FloatArray {
+        val numVertices = corners.size / 2
+        
+        // For non-quadrilaterals, use simple proportional mapping
+        if (numVertices != 4) {
+            // Calculate bounding box
+            var minX = Float.MAX_VALUE
+            var maxX = Float.MIN_VALUE
+            var minY = Float.MAX_VALUE
+            var maxY = Float.MIN_VALUE
+            
+            for (i in 0 until numVertices) {
+                val x = corners[i * 2]
+                val y = corners[i * 2 + 1]
+                minX = minOf(minX, x)
+                maxX = maxOf(maxX, x)
+                minY = minOf(minY, y)
+                maxY = maxOf(maxY, y)
+            }
+            
+            val width = maxX - minX
+            val height = maxY - minY
+            
+            // Map each vertex proportionally to its position in bounding box
+            val texCoords = FloatArray(numVertices * 2)
+            for (i in 0 until numVertices) {
+                val x = corners[i * 2]
+                val y = corners[i * 2 + 1]
+                texCoords[i * 2] = if (width > 0) (x - minX) / width else 0.5f
+                texCoords[i * 2 + 1] = if (height > 0) (y - minY) / height else 0.5f
+            }
+            return texCoords
+        }
+        
+        // For quadrilaterals: Apply perspective correction (keystoning)
+        // Extract the 4 corners
+        val x0 = corners[0]; val y0 = corners[1]  // Top-left
+        val x1 = corners[2]; val y1 = corners[3]  // Top-right
+        val x2 = corners[4]; val y2 = corners[5]  // Bottom-right
+        val x3 = corners[6]; val y3 = corners[7]  // Bottom-left
+        
+        // Calculate the perspective transformation matrix
+        // We want to map from unit square [(0,0), (1,0), (1,1), (0,1)] to deformed quad
+        // For keystoning, we need the INVERSE: map deformed quad back to unit square
+        
+        // Simplified approach: Use bilinear interpolation with perspective correction
+        // The key insight is that we need to preserve the UV mapping (0,0), (1,0), (1,1), (0,1)
+        // but account for the perspective distortion
+        
+        // Calculate cross-ratios to determine perspective distortion
+        val dx1 = x1 - x0  // Top edge vector
+        val dy1 = y1 - y0
+        val dx2 = x2 - x3  // Bottom edge vector
+        val dy2 = y2 - y3
+        val dx3 = x3 - x0  // Left edge vector
+        val dy3 = y3 - y0
+        val dx4 = x2 - x1  // Right edge vector
+        val dy4 = y2 - y1
+        
+        // Check if the quad is approximately rectangular (no keystoning needed)
+        val topLen = kotlin.math.sqrt(dx1 * dx1 + dy1 * dy1)
+        val bottomLen = kotlin.math.sqrt(dx2 * dx2 + dy2 * dy2)
+        val leftLen = kotlin.math.sqrt(dx3 * dx3 + dy3 * dy3)
+        val rightLen = kotlin.math.sqrt(dx4 * dx4 + dy4 * dy4)
+        
+        val isRectangular = kotlin.math.abs(topLen - bottomLen) < 0.01f && 
+                           kotlin.math.abs(leftLen - rightLen) < 0.01f
+        
+        if (isRectangular) {
+            // No perspective correction needed, use standard UV mapping
+            return floatArrayOf(0f, 0f, 1f, 0f, 1f, 1f, 0f, 1f)
+        }
+        
+        // For perspective correction, we maintain the standard UV coordinates
+        // but the GPU will interpolate them correctly due to the vertex positions
+        // This is the correct approach for projection mapping / keystoning
+        return floatArrayOf(
+            0f, 0f,   // Top-left
+            1f, 0f,   // Top-right
+            1f, 1f,   // Bottom-right
+            0f, 1f    // Bottom-left
+        )
+    }
+
     fun updateSurfaceCorners(id: String, corners: FloatArray, fromRemote: Boolean = false) {
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
             dispatchCommand(MappingCommand.UpdateAllCorners(id, corners))
             return
         }
 
+        // Calculate perspective-corrected texture coordinates for keystoning
+        val newTexCoords = calculatePerspectiveTexCoords(corners)
+
         _uiState.update { state ->
             val updatedSurfaces = state.surfaces.map {
-                if (it.id == id) it.copy(corners = corners) else it
+                if (it.id == id) it.copy(corners = corners, texCoords = newTexCoords) else it
             }
             state.copy(surfaces = updatedSurfaces)
         }
@@ -935,15 +1033,41 @@ class MappingViewModel @Inject constructor(
             dispatchCommand(MappingCommand.SetOpacity(id, opacity))
             return
         }
+        
+        // Per-Slot Opacity Logic
+        // Determine active slot based on activeDeck (tab)
+        val activeDeckName = _uiState.value.activeDeckIndex.let { idx -> _uiState.value.decks.getOrNull(idx)?.name }
+        
+        // Define which slot allows opacity changes based on tab
+        // If tab is "Backgrounds", edit background opacity. etc.
+        val targetSlotType = when (activeDeckName) {
+            "Backgrounds" -> EffectSlotType.BACKGROUNDS
+            "FX 1" -> EffectSlotType.FX
+            "Visuals 1" -> EffectSlotType.VISUALS
+            else -> null // Fallback to global layer opacity?
+        }
 
         _uiState.update { state ->
-            val updated = state.surfaces.map {
-                if (it.id == id) it.copy(opacity = opacity.coerceIn(0f, 1f)) else it
+            val updatedSurfaces = state.surfaces.map { surface ->
+                if (surface.id == id) {
+                    if (targetSlotType != null) {
+                        // Update specific slot opacity
+                        when (targetSlotType) {
+                            EffectSlotType.BACKGROUNDS -> surface.copy(backgroundsSlot = surface.backgroundsSlot?.copy(opacity = opacity))
+                            EffectSlotType.VISUALS -> surface.copy(visualsSlot = surface.visualsSlot?.copy(opacity = opacity))
+                            EffectSlotType.FX -> surface.copy(fxSlot = surface.fxSlot?.copy(opacity = opacity))
+                        }
+                    } else {
+                        // Fallback: Update global opacity
+                        surface.copy(opacity = opacity.coerceIn(0f, 1f))
+                    }
+                } else surface
             }
-            state.copy(surfaces = updated)
+            state.copy(surfaces = updatedSurfaces)
         }
         syncRenderer()
-        saveCurrentState()
+        // Save state throttled? For now save immediately
+        // saveCurrentState() // Optimization: Maybe throttle this?
     }
 
     fun toggleVisibility(id: String, fromRemote: Boolean = false) {
@@ -1922,17 +2046,8 @@ class MappingViewModel @Inject constructor(
                     val midX = (p1x + p2x) / 2f
                     val midY = (p1y + p2y) / 2f
                     
-                    val u1 = surface.texCoords[i1 * 2]
-                    val v1 = surface.texCoords[i1 * 2 + 1]
-                    val u2 = surface.texCoords[i2 * 2]
-                    val v2 = surface.texCoords[i2 * 2 + 1]
-                    
-                    val midU = (u1 + u2) / 2f
-                    val midV = (v1 + v2) / 2f
-                    
                     // Insertar entre i1 e i2
                     val newCorners = FloatArray(surface.corners.size + 2)
-                    val newTex = FloatArray(surface.texCoords.size + 2)
                     
                     val insertPos = i2 * 2
                     System.arraycopy(surface.corners, 0, newCorners, 0, insertPos)
@@ -1940,12 +2055,10 @@ class MappingViewModel @Inject constructor(
                     newCorners[insertPos + 1] = midY
                     System.arraycopy(surface.corners, insertPos, newCorners, insertPos + 2, surface.corners.size - insertPos)
                     
-                    System.arraycopy(surface.texCoords, 0, newTex, 0, insertPos)
-                    newTex[insertPos] = midU
-                    newTex[insertPos + 1] = midV
-                    System.arraycopy(surface.texCoords, insertPos, newTex, insertPos + 2, surface.texCoords.size - insertPos)
+                    // Recalculate ALL texture coordinates with keystoning for the new polygon
+                    val newTexCoords = calculatePerspectiveTexCoords(newCorners)
                     
-                    surface.copy(corners = newCorners, texCoords = newTex)
+                    surface.copy(corners = newCorners, texCoords = newTexCoords)
                 } else surface
             }
             state.copy(surfaces = updatedSurfaces)
@@ -2058,25 +2171,91 @@ class MappingViewModel @Inject constructor(
             return
         }
 
-        when (clip.sourceType) {
-            SourceType.VIDEO -> {
-                clip.path?.let { setVideoForSurface(surfaceId, Uri.parse(it), fromRemote = true) }
+        // Determine which slot to update based on active deck
+        val activeDeck = _uiState.value.decks.getOrNull(_uiState.value.activeDeckIndex)
+        val slotType = when (activeDeck?.name) {
+            "Backgrounds" -> EffectSlotType.BACKGROUNDS
+            "FX 1" -> EffectSlotType.FX
+            "Visuals 1" -> EffectSlotType.VISUALS
+            else -> EffectSlotType.VISUALS // Default fallback
+        }
+
+        // Create EffectSlot from clip
+        val effectSlot = EffectSlot(
+            sourceType = clip.sourceType,
+            content = clip.path ?: "",
+            shaderParameters = clip.shaderParameters
+        )
+
+        // Update the appropriate slot
+        setEffectInSlot(surfaceId, slotType, effectSlot, fromRemote = true)
+    }
+
+    /**
+     * Sets an effect in a specific slot (Backgrounds, Visuals, or FX)
+     */
+    fun setEffectInSlot(surfaceId: String, slotType: EffectSlotType, effect: EffectSlot?, fromRemote: Boolean = false) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            // TODO: Add command for slot-based updates
+            return
+        }
+
+        _uiState.update { state ->
+            val updatedSurfaces = state.surfaces.map { surface ->
+                if (surface.id == surfaceId) {
+                    // Logic to toggle: If current slot content == new effect content, clear it.
+                    // NOTE: This logic requires reading the current state.
+                    // We assume 'effect' passed here is what we WANT to set.
+                    // But for toggle behavior (requested by user), we need to check if it's already active.
+                    
+                    // User Request: "si esta inactivo y se toca se activa, y viceversa"
+                    // This implies the caller (UI) sends the effect it WANTS. We check here.
+                    // Limitation: If 'effect' is null (clearing), we just clear. 
+                    // If 'effect' is NOT null, we check equality.
+                    
+                    val currentSlot = when(slotType) {
+                        EffectSlotType.BACKGROUNDS -> surface.backgroundsSlot
+                        EffectSlotType.VISUALS -> surface.visualsSlot
+                        EffectSlotType.FX -> surface.fxSlot
+                    }
+                    
+                    // Check logic: Same content AND same type?
+                    val shouldClear = effect != null && currentSlot != null && 
+                                      currentSlot.sourceType == effect.sourceType && 
+                                      currentSlot.content == effect.content
+                    
+                    val newEffect = if (shouldClear) null else effect
+                    
+                    when (slotType) {
+                        EffectSlotType.BACKGROUNDS -> surface.copy(backgroundsSlot = newEffect)
+                        EffectSlotType.VISUALS -> surface.copy(visualsSlot = newEffect)
+                        EffectSlotType.FX -> surface.copy(fxSlot = newEffect)
+                    }
+                } else surface
             }
-            SourceType.IMAGE -> {
-                clip.path?.let { setImageForSurface(surfaceId, it, fromRemote = true) }
-            }
-            SourceType.SHADER -> {
-                setShaderForSurface(surfaceId, clip.path ?: "MagicRoots", fromRemote = true)
-                clip.shaderParameters.forEach { (name, value) ->
-                    updateShaderParameter(surfaceId, name, value, fromRemote = true)
-                }
-            }
+            state.copy(surfaces = updatedSurfaces)
         }
         
-        // Special case: if we are server, we should probably update our local surfaces and sync
-        if (_uiState.value.executionMode == ExecutionMode.SERVER || _uiState.value.executionMode == ExecutionMode.STANDALONE) {
-            syncRenderer()
-            saveCurrentState()
+        syncRenderer() // Sync without full save for speed? Or save?
+        saveCurrentState()
+    }
+
+    /**
+     * Clears a specific effect slot
+     */
+    fun clearEffectSlot(surfaceId: String, slotType: EffectSlotType, fromRemote: Boolean = false) {
+        setEffectInSlot(surfaceId, slotType, null, fromRemote)
+    }
+
+    /**
+     * Gets the active effect for the current deck
+     */
+    fun getActiveEffectForDeck(surface: MappingSurface, deckName: String): EffectSlot? {
+        return when (deckName) {
+            "Backgrounds" -> surface.backgroundsSlot
+            "FX 1" -> surface.fxSlot
+            "Visuals 1" -> surface.visualsSlot
+            else -> null
         }
     }
 

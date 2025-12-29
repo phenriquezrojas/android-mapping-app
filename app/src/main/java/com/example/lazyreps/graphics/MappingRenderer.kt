@@ -11,6 +11,7 @@ import com.example.lazyreps.R
 import com.example.lazyreps.core.models.MappingSurface
 import com.example.lazyreps.core.models.MappingState
 import com.example.lazyreps.core.models.SourceType
+import com.example.lazyreps.core.models.EffectSlot
 import android.os.SystemClock
 import android.util.Log
 import java.nio.ByteBuffer
@@ -72,6 +73,10 @@ class MappingRenderer(
     // Buffers persistentes por superficie para evitar lag por GC
     private val vertexBuffers = mutableMapOf<String, FloatBuffer>()
     private val textureBuffers = mutableMapOf<String, FloatBuffer>()
+    
+    // Multi-layer rendering with FBOs
+    private var fboManager: FBOManager? = null
+    private var multiLayerEnabled = false
 
     fun updateSurfaces(newSurfaces: List<MappingSurface>) {
         mappingSurfaces = newSurfaces
@@ -310,48 +315,284 @@ class MappingRenderer(
         screenWidth = width.toFloat()
         screenHeight = height.toFloat()
         onScreenSizeChanged?.invoke(width, height)
+        
+        // Initialize FBO Manager for multi-layer rendering
+        if (fboManager == null) {
+            fboManager = FBOManager(width, height)
+            multiLayerEnabled = fboManager?.initialize() ?: false
+            
+            if (multiLayerEnabled) {
+                Log.d("MappingRenderer", "Multi-layer rendering ENABLED with FBOs")
+            } else {
+                Log.w("MappingRenderer", "Multi-layer rendering DISABLED (FBO not supported), using fallback")
+            }
+        }
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        if (frameCount < 5) {
-            frameCount++
-            logBreadcrumb?.invoke("onDrawFrame #$frameCount")
-        }
         try {
-            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_DEPTH_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
-        
-        val surfacesToDraw = mappingSurfaces
-        if (surfacesToDraw.isEmpty()) {
-            // Log.v("MappingRenderer", "Nothing to draw")
+            // Check current time
+            // val now = SystemClock.elapsedRealtime()
+            // val dt = (now - startTime) / 1000f
+
+            GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
+            
+            // Render Surfaces
+            val localSurfaces = mappingSurfaces // Snap for thread safety
+            val animates = localSurfaces.any { it.isPlaying }
+            
+            localSurfaces.forEach { surface ->
+                if (surface.isVisible) {
+                    // Decide strategy: Multi-layer (FBO) vs Legacy
+                    // We use multi-layer if enabled, supported, AND at least one slot is defined
+                    if (multiLayerEnabled && fboManager?.isSupported() == true && 
+                        (surface.backgroundsSlot != null || surface.visualsSlot != null || surface.fxSlot != null)) {
+                        drawSurfaceMultiLayer(surface)
+                    } else {
+                        drawSurface(surface)
+                    }
+                }
+            }
+            
+            // Draw Overlays (Selection / Outlines)
+            if (outputMode == "EDIT") {
+                drawOverlays(localSurfaces)
+            }
+            
+            if (outputMode == "SHOW" || animates) {
+                requestRender?.invoke()
+            }
+            
+            // Process deferred shader loading (staggered)
+            processDeferredShaders()
+            
+            val err = GLES20.glGetError()
+            if (err != GLES20.GL_NO_ERROR) {
+                Log.e("MappingRenderer", "GL Error in onDrawFrame: $err")
+            }
+        } catch (t: Throwable) {
+            Log.e("MappingRenderer", "FATAL CRASH in onDrawFrame", t)
         }
-        
-        var animates = false
-        surfacesToDraw.forEach { surface ->
-            if (surface.isVisible) {
-                drawSurface(surface)
-                if (surface.sourceType == SourceType.SHADER) animates = true
+    }
+
+    // --- Multi-Layer Rendering (FBO Pipeline) ---
+    
+    // Buffer for full-screen quad (for rendering into FBO)
+    private val fullQuadVertices = floatArrayOf(
+        -1f, -1f,  // Bottom-Left
+         1f, -1f,  // Bottom-Right
+         1f,  1f,  // Top-Right
+        -1f,  1f   // Top-Left
+    )
+    private val fullQuadTexCoords = floatArrayOf(
+        0f, 0f,
+        1f, 0f,
+        1f, 1f,
+        0f, 1f
+    )
+    private var fullQuadVBuf: FloatBuffer? = null
+    private var fullQuadTBuf: FloatBuffer? = null
+
+    private fun getFullQuadBuffers(): Pair<FloatBuffer, FloatBuffer> {
+        if (fullQuadVBuf == null) {
+            fullQuadVBuf = ByteBuffer.allocateDirect(fullQuadVertices.size * 4).run {
+                order(ByteOrder.nativeOrder())
+                asFloatBuffer().apply { put(fullQuadVertices); position(0) }
             }
         }
-        
-        if (outputMode == "EDIT") {
-            drawOverlays(surfacesToDraw)
+        if (fullQuadTBuf == null) {
+            fullQuadTBuf = ByteBuffer.allocateDirect(fullQuadTexCoords.size * 4).run {
+                order(ByteOrder.nativeOrder())
+                asFloatBuffer().apply { put(fullQuadTexCoords); position(0) }
+            }
         }
-        
-        if (outputMode == "SHOW" || animates) {
-            requestRender?.invoke()
-        }
-        
-        // Process deferred shader loading (staggered)
-        processDeferredShaders()
-        
-        val err = GLES20.glGetError()
-        if (err != GLES20.GL_NO_ERROR) {
-            Log.e("MappingRenderer", "GL Error in onDrawFrame: $err")
-        }
-    } catch (t: Throwable) {
-        Log.e("MappingRenderer", "FATAL CRASH in onDrawFrame", t)
+        return Pair(fullQuadVBuf!!, fullQuadTBuf!!)
     }
-}
+
+    private fun drawSurfaceMultiLayer(surface: MappingSurface) {
+        val fboMgr = fboManager ?: return
+        
+        // --- Pass 1: Render Layers to FBOs ---
+        
+        // Backgrounds (FBO 0)
+        surface.backgroundsSlot?.let { slot ->
+            renderSlotToFBO(slot, 0, fboMgr, surface)
+        }
+        
+        // Visuals (FBO 1)
+        surface.visualsSlot?.let { slot ->
+            renderSlotToFBO(slot, 1, fboMgr, surface)
+        }
+        
+        // FX (FBO 2)
+        surface.fxSlot?.let { slot ->
+            renderSlotToFBO(slot, 2, fboMgr, surface)
+        }
+        
+        // Change Viewport back to Screen
+        GLES20.glViewport(0, 0, screenWidth.toInt(), screenHeight.toInt())
+        
+        // --- Pass 2: Composite to Screen (Masked) ---
+        prepareStencil(surface)
+        
+        // Enable Blending for composition
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        
+        GLES20.glColorMask(true, true, true, true)
+        GLES20.glDepthMask(true)
+        GLES20.glStencilFunc(GLES20.GL_NOTEQUAL, 0, 0xFF)
+        GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_KEEP)
+        
+        // Draw Layers
+        if (surface.backgroundsSlot != null) {
+            drawFBOTextureToScreen(surface, fboMgr.getTextureId(0))
+        }
+        if (surface.visualsSlot != null) {
+            drawFBOTextureToScreen(surface, fboMgr.getTextureId(1))
+        }
+        if (surface.fxSlot != null) {
+            drawFBOTextureToScreen(surface, fboMgr.getTextureId(2))
+        }
+    }
+    
+    private fun renderSlotToFBO(slot: EffectSlot, fboIndex: Int, fboMgr: FBOManager, surface: MappingSurface) {
+        fboMgr.bindFBO(fboIndex)
+        GLES20.glClearColor(0f, 0f, 0f, 0f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        
+        val (vBuf, tBuf) = getFullQuadBuffers()
+        
+        if (slot.sourceType == SourceType.VIDEO) {
+            // Try to use the surface's video texture
+            val texId = surfaceTextureIds[surface.id] ?: 0
+            if (texId != 0) {
+                 GLES20.glUseProgram(program)
+                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+                 GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, texId)
+                 GLES20.glUniform1i(textureHandle, 0)
+                 GLES20.glUniform1f(blackHandle, 0f)
+                 // Use per-slot opacity
+                 GLES20.glUniform1f(opacityHandle, slot.opacity)
+                 
+                 GLES20.glEnableVertexAttribArray(positionHandle)
+                 GLES20.glVertexAttribPointer(positionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+                 GLES20.glEnableVertexAttribArray(texCoordHandle)
+                 GLES20.glVertexAttribPointer(texCoordHandle, 2, GLES20.GL_FLOAT, false, 0, tBuf)
+                 GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+                 GLES20.glDisableVertexAttribArray(positionHandle)
+                 GLES20.glDisableVertexAttribArray(texCoordHandle)
+            }
+        } else if (slot.sourceType == SourceType.IMAGE) {
+            val imgId = imageTextures[slot.content] ?: 0
+             if (imgId == 0) loadImageTexture(slot.content)
+            
+            GLES20.glUseProgram(imageProgram)
+            GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, imgId)
+            GLES20.glUniform1i(imageTextureHandle, 0)
+            GLES20.glUniform1f(imageBlackHandle, 0f)
+            // Use per-slot opacity
+            GLES20.glUniform1f(imageOpacityHandle, slot.opacity)
+            
+            GLES20.glEnableVertexAttribArray(imagePositionHandle)
+            GLES20.glVertexAttribPointer(imagePositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+            GLES20.glEnableVertexAttribArray(imageTexCoordHandle)
+            GLES20.glVertexAttribPointer(imageTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, tBuf)
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+            GLES20.glDisableVertexAttribArray(imagePositionHandle)
+            GLES20.glDisableVertexAttribArray(imageTexCoordHandle)
+        } else if (slot.sourceType == SourceType.SHADER) {
+            val shaderId = slot.content
+             if (!shaderPrograms.containsKey(shaderId) && !deferredQueue.any { it.first == shaderId }) {
+                shaderResourceMap[shaderId]?.let { resId -> deferredQueue.add(shaderId to resId) }
+            }
+            val pId = shaderPrograms[shaderId] ?: program
+            GLES20.glUseProgram(pId)
+            
+            val time = (SystemClock.elapsedRealtime() - startTime) / 1000f
+            val uTime = getUniLoc(pId, "u_time"); if(uTime!=-1) GLES20.glUniform1f(uTime, time)
+            val uRes = getUniLoc(pId, "u_resolution"); if(uRes!=-1) GLES20.glUniform2f(uRes, screenWidth, screenHeight)
+            // Use per-slot opacity
+            val uOp = getUniLoc(pId, "u_opacity"); if(uOp!=-1) GLES20.glUniform1f(uOp, slot.opacity)
+            
+            slot.shaderParameters.forEach { (k, v) ->
+                val loc = getUniLoc(pId, k); if (loc != -1) GLES20.glUniform1f(loc, v)
+            }
+
+            val posH = getAttrLoc(pId, "a_Position")
+            val texH = getAttrLoc(pId, "a_TexCoord")
+            GLES20.glEnableVertexAttribArray(posH)
+            GLES20.glVertexAttribPointer(posH, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+            if (texH != -1) {
+                GLES20.glEnableVertexAttribArray(texH)
+                GLES20.glVertexAttribPointer(texH, 2, GLES20.GL_FLOAT, false, 0, tBuf)
+            }
+            GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, 4)
+            GLES20.glDisableVertexAttribArray(posH)
+            if (texH != -1) GLES20.glDisableVertexAttribArray(texH)
+        }
+        
+        fboMgr.unbindFBO()
+    }
+    
+    private fun prepareStencil(surface: MappingSurface) {
+        val vertexCount = surface.corners.size / 2
+        val vertices = FloatArray(surface.corners.size)
+        for (i in 0 until vertexCount) {
+            vertices[i * 2] = surface.corners[i * 2] * 2 - 1f
+            vertices[i * 2 + 1] = -(surface.corners[i * 2 + 1] * 2 - 1f)
+        }
+        val vBuf = vertexBuffers[surface.id].let { existing ->
+            if (existing == null || existing.capacity() < vertices.size) {
+                 ByteBuffer.allocateDirect(vertices.size * 4).run { order(ByteOrder.nativeOrder()); asFloatBuffer().also { vertexBuffers[surface.id] = it } }
+            } else existing
+        }.apply { clear(); put(vertices); position(0) }
+        
+        GLES20.glClear(GLES20.GL_STENCIL_BUFFER_BIT)
+        GLES20.glColorMask(false, false, false, false)
+        GLES20.glDepthMask(false)
+        GLES20.glStencilFunc(GLES20.GL_ALWAYS, 0, 0xFF)
+        GLES20.glStencilOpSeparate(GLES20.GL_FRONT, GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_INCR_WRAP)
+        GLES20.glStencilOpSeparate(GLES20.GL_BACK, GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_DECR_WRAP)
+        
+        GLES20.glUseProgram(maskProgram)
+        GLES20.glUniform4f(maskColorHandle, 1.0f, 1.0f, 1.0f, 1.0f)
+        GLES20.glEnableVertexAttribArray(maskPositionHandle)
+        GLES20.glVertexAttribPointer(maskPositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
+        GLES20.glDisableVertexAttribArray(maskPositionHandle)
+    }
+
+    private fun drawFBOTextureToScreen(surface: MappingSurface, textureId: Int) {
+        // Prepare Warped Quad Buffer (reuse existing)
+        val vBuf = vertexBuffers[surface.id] ?: return 
+        val tBuf = textureBuffers[surface.id].let { existing ->
+             if (existing == null || existing.capacity() < surface.texCoords.size) {
+                ByteBuffer.allocateDirect(surface.texCoords.size * 4).run { order(ByteOrder.nativeOrder()); asFloatBuffer().also { textureBuffers[surface.id] = it } }
+             } else existing
+        }.apply { clear(); put(surface.texCoords); position(0) }
+        
+        // Use Image Program (Generic Texture)
+        GLES20.glUseProgram(imageProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        GLES20.glUniform1i(imageTextureHandle, 0)
+        GLES20.glUniform1f(imageBlackHandle, if (surface.isBlack) 1.0f else 0.0f)
+        GLES20.glUniform1f(imageOpacityHandle, surface.opacity) 
+        
+        GLES20.glEnableVertexAttribArray(imagePositionHandle)
+        GLES20.glVertexAttribPointer(imagePositionHandle, 2, GLES20.GL_FLOAT, false, 0, vBuf)
+        GLES20.glEnableVertexAttribArray(imageTexCoordHandle)
+        GLES20.glVertexAttribPointer(imageTexCoordHandle, 2, GLES20.GL_FLOAT, false, 0, tBuf)
+        
+        // Draw 
+        val vertexCount = surface.corners.size / 2
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, vertexCount)
+        
+        GLES20.glDisableVertexAttribArray(imagePositionHandle)
+        GLES20.glDisableVertexAttribArray(imageTexCoordHandle)
+    }
 
     private fun drawSurface(surface: MappingSurface) {
         val texId = synchronized(surfacesLock) {

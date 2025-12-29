@@ -261,7 +261,8 @@ fun DashboardGrid(
                 onLongClick = { slotIndex -> onLongClick(surface.id, slotIndex) },
                 onOpacityChange = { onOpacityChange(surface.id, it) },
                 onToggleBlack = { onToggleBlack(surface.id) },
-                tint = getNeonColor(index)
+                tint = getNeonColor(index),
+                activeDeckName = deck.name
             )
         }
     }
@@ -276,8 +277,17 @@ fun LayerColumn(
     onLongClick: (Int) -> Unit,
     onOpacityChange: (Float) -> Unit,
     onToggleBlack: () -> Unit,
-    tint: Color
+    tint: Color,
+    activeDeckName: String
 ) {
+    // Calculate displayed opacity based on active deck
+    val displayedOpacity = when (activeDeckName) {
+        "Backgrounds" -> surface.backgroundsSlot?.opacity ?: 1f
+        "Visuals 1" -> surface.visualsSlot?.opacity ?: 1f
+        "FX 1" -> surface.fxSlot?.opacity ?: 1f
+        else -> surface.opacity
+    }
+
     Column(
         modifier = Modifier
             .width(140.dp)
@@ -307,7 +317,7 @@ fun LayerColumn(
                 
                 // Master Opacity Slider
                 Slider(
-                    value = surface.opacity,
+                    value = displayedOpacity,
                     onValueChange = onOpacityChange,
                     modifier = Modifier.height(20.dp),
                     colors = SliderDefaults.colors(
@@ -372,10 +382,25 @@ fun ClipSlot(
     onLongClick: () -> Unit,
     tint: Color
 ) {
-    // Check if this clip's content is the one currently active on the surface
+    // Determine which slot to check based on the active deck
+    // This is a simplified approach - ideally we'd pass the deck name as a parameter
+    // For now, we check all slots and highlight if any matches
     val isPlaying = clip != null && (
-        (clip.sourceType == surface.sourceType) && 
-        (clip.path == (if (clip.sourceType == SourceType.VIDEO) surface.videoPath else if (clip.sourceType == SourceType.IMAGE) surface.imagePath else surface.shaderId))
+        (clip.sourceType == SourceType.SHADER && (
+            clip.path == surface.backgroundsSlot?.content ||
+            clip.path == surface.visualsSlot?.content ||
+            clip.path == surface.fxSlot?.content
+        )) ||
+        (clip.sourceType == SourceType.VIDEO && (
+            clip.path == surface.backgroundsSlot?.content ||
+            clip.path == surface.visualsSlot?.content ||
+            clip.path == surface.fxSlot?.content
+        )) ||
+        (clip.sourceType == SourceType.IMAGE && (
+            clip.path == surface.backgroundsSlot?.content ||
+            clip.path == surface.visualsSlot?.content ||
+            clip.path == surface.fxSlot?.content
+        ))
     )
 
     Box(
