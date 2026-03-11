@@ -12,8 +12,8 @@ import android.util.Log
  */
 class FBOManager(private val width: Int, private val height: Int) {
     
-    private val fboIds = IntArray(3)  // 3 FBOs for Backgrounds, Visuals, FX
-    private val textureIds = IntArray(3)
+    private val fboIds = IntArray(4)  // 3 standard + 1 MaskFBO
+    private val textureIds = IntArray(4)
     private var isInitialized = false
     private var fboSupported = true
     
@@ -25,12 +25,12 @@ class FBOManager(private val width: Int, private val height: Int) {
         
         try {
             // Generate FBOs
-            GLES20.glGenFramebuffers(3, fboIds, 0)
+            GLES20.glGenFramebuffers(4, fboIds, 0)
             
             // Generate textures
-            GLES20.glGenTextures(3, textureIds, 0)
+            GLES20.glGenTextures(4, textureIds, 0)
             
-            for (i in 0 until 3) {
+            for (i in 0 until 4) {
                 // Bind texture
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureIds[i])
                 
@@ -88,7 +88,7 @@ class FBOManager(private val width: Int, private val height: Int) {
      * Bind FBO for rendering
      */
     fun bindFBO(index: Int) {
-        if (!isInitialized || !fboSupported || index < 0 || index >= 3) return
+        if (!isInitialized || !fboSupported || index < 0 || index >= 4) return
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, fboIds[index])
         GLES20.glViewport(0, 0, width, height)
     }
@@ -104,7 +104,7 @@ class FBOManager(private val width: Int, private val height: Int) {
      * Get texture ID for a specific FBO
      */
     fun getTextureId(index: Int): Int {
-        if (!isInitialized || !fboSupported || index < 0 || index >= 3) return 0
+        if (!isInitialized || !fboSupported || index < 0 || index >= 4) return 0
         return textureIds[index]
     }
     
@@ -118,11 +118,11 @@ class FBOManager(private val width: Int, private val height: Int) {
      */
     fun cleanup() {
         if (fboIds[0] != 0) {
-            GLES20.glDeleteFramebuffers(3, fboIds, 0)
+            GLES20.glDeleteFramebuffers(4, fboIds, 0)
             fboIds.fill(0)
         }
         if (textureIds[0] != 0) {
-            GLES20.glDeleteTextures(3, textureIds, 0)
+            GLES20.glDeleteTextures(4, textureIds, 0)
             textureIds.fill(0)
         }
         isInitialized = false

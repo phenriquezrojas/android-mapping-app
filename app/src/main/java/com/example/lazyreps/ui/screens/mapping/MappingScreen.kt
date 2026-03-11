@@ -5,11 +5,13 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
@@ -30,6 +32,12 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Undo
+import androidx.compose.material.icons.filled.Redo
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.animation.*
 import androidx.compose.animation.core.animateFloatAsState
@@ -83,8 +91,6 @@ fun MappingScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val context = LocalContext.current
-    val renderer = remember { MappingRenderer(context) }
-    
     // Mantener la pantalla encendida durante la ejecución de la app
     LocalView.current.keepScreenOn = true
     
@@ -98,14 +104,14 @@ fun MappingScreen(
     // Check if ALL permissions are granted
     val allPermissionsGranted = permissionState.allPermissionsGranted
 
-
-
     var showSaveDialog by remember { mutableStateOf(false) }
     var saveProjectName by remember { mutableStateOf("") }
 
     var showFilePicker by remember { mutableStateOf(false) }
     var showContentSettings by remember { mutableStateOf(false) }
     var filePickerMode by remember { mutableStateOf(SourceType.VIDEO) }
+
+
 
     // Función segura para lanzar video picker (Internal)
     val openFilePicker = { mode: SourceType ->
@@ -137,12 +143,7 @@ fun MappingScreen(
         }
     }
 
-    DisposableEffect(renderer) {
-        viewModel.initRenderer(renderer)
-        onDispose {
-            viewModel.releaseRenderer()
-        }
-    }
+
 
     // Auto-solicitar permisos al inicio para asegurar que los logs se puedan escribir
     LaunchedEffect(Unit) {
@@ -158,6 +159,7 @@ fun MappingScreen(
     var pendingLoadProjectId by remember { mutableStateOf<String?>(null) }
 
     var showRoleDialog by remember { mutableStateOf(false) }
+    var connectionTab by remember { mutableIntStateOf(0) } // 0: Auto, 1: Manual
     
     if (showRoleDialog) {
         val appVersion = com.example.lazyreps.BuildConfig.VERSION_NAME
@@ -190,7 +192,7 @@ fun MappingScreen(
                     isSelected = uiState.executionMode == ExecutionMode.CLIENT,
                     onClick = { 
                         viewModel.switchExecutionMode(ExecutionMode.CLIENT)
-                        showRoleDialog = false 
+                        // Removed: showRoleDialog = false - Keep open to see discovery list
                     }
                 )
 
@@ -220,47 +222,135 @@ fun MappingScreen(
                     }
                 }
 
-                Divider(color = Color.White.copy(alpha = 0.1f))
-                
-                // Input IP Manual y Botón Reintentar
-                var manualIp by remember { mutableStateOf(uiState.serverIp ?: "") }
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR) {
-                        Text(
-                            text = "Error de conexión. Verifica la IP.",
-                            color = Color.Red,
-                            style = MaterialTheme.typography.labelSmall
+                if (uiState.executionMode == ExecutionMode.CLIENT) {
+                    TabRow(
+                        selectedTabIndex = connectionTab,
+                        containerColor = Color.Transparent,
+                        contentColor = Color.Cyan,
+                        divider = {},
+                        indicator = { tabPositions ->
+                            Box(
+                                Modifier
+                                    .tabIndicatorOffset(tabPositions[connectionTab])
+                                    .height(2.dp)
+                                    .padding(horizontal = 16.dp)
+                                    .background(Color.Cyan, RoundedCornerShape(1.dp))
+                            )
+                        }
+                    ) {
+                        Tab(
+                            selected = connectionTab == 0,
+                            onClick = { connectionTab = 0 },
+                            text = { Text("NEARBY", style = MaterialTheme.typography.labelSmall) }
+                        )
+                        Tab(
+                            selected = connectionTab == 1,
+                            onClick = { connectionTab = 1 },
+                            text = { Text("DIRECT IP", style = MaterialTheme.typography.labelSmall) }
                         )
                     }
 
-                    OutlinedTextField(
-                        value = manualIp,
-                        onValueChange = { manualIp = it },
-                        label = { Text("IP Manual (opcional)", color = Color.Gray) },
-                        modifier = Modifier.fillMaxWidth(),
-                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = MaterialTheme.colorScheme.primary,
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.3f)
-                        )
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = {
-                                if (manualIp.isNotBlank()) {
-                                    viewModel.connectToRemoteServer(manualIp)
-                                    showRoleDialog = false
+                    Spacer(Modifier.height(8.dp))
+
+                    AnimatedContent(
+                        targetState = connectionTab,
+                        transitionSpec = {
+                            if (targetState > initialState) {
+                                (slideInHorizontally { width -> width } + fadeIn()).togetherWith(slideOutHorizontally { width -> -width } + fadeOut())
+                            } else {
+                                (slideInHorizontally { width -> -width } + fadeIn()).togetherWith(slideOutHorizontally { width -> width } + fadeOut())
+                            }.using(SizeTransform(clip = false))
+                        },
+                        label = "ConnectionTabTransition"
+                    ) { targetTab ->
+                        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            if (targetTab == 0) {
+                                // --- AUTO DISCOVERY TAB ---
+                                if (uiState.discoveredServers.isNotEmpty()) {
+                                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                        uiState.discoveredServers.forEach { ip ->
+                                            ServerListItem(ip, onClick = { 
+                                                viewModel.connectToRemoteServer(ip)
+                                                showRoleDialog = false
+                                            })
+                                        }
+                                    }
+                                } else if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTING) {
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally
+                                    ) {
+                                        CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp, color = Color.Cyan)
+                                        Spacer(Modifier.height(12.dp))
+                                        Text("Searching for projectors...", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                    }
+                                } else {
+                                    // Empty state inside tab
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        Icon(Icons.Default.Info, null, tint = Color.Gray.copy(alpha = 0.5f), modifier = Modifier.size(24.dp))
+                                        Text("No projectors found", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                        OutlinedButton(
+                                            onClick = { viewModel.startDiscovery() },
+                                            border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.3f)),
+                                            shape = RoundedCornerShape(8.dp)
+                                        ) {
+                                            Text("Refresh", color = Color.Cyan, fontSize = 10.sp)
+                                        }
+                                    }
                                 }
-                            },
-                            modifier = Modifier.weight(1f),
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text(if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTING) "Connecting..." else "Connect")
-                        }
-                        
-                        if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR) {
-                            IconButton(onClick = { viewModel.retryConnection() }) {
-                                Icon(Icons.Default.Refresh, contentDescription = "Retry", tint = Color.White)
+                            } else {
+                                // --- MANUAL IP TAB ---
+                                // Fix: Don't bind to uiState.serverIp if it says "Searching..." or "Local Server" or "Not found"
+                                val initialIp = if (uiState.serverIp == "Searching..." || uiState.serverIp == "Local Server" || uiState.serverIp == "Select a server" || uiState.serverIp == "Not found") "" else (uiState.serverIp ?: "")
+                                var manualIp by remember { mutableStateOf(initialIp) }
+                                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                                    if (uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.ERROR) {
+                                        Text("Connection failed. Check IP.", color = Color.Red, style = MaterialTheme.typography.labelSmall)
+                                    }
+
+                                    OutlinedTextField(
+                                        value = manualIp,
+                                        onValueChange = { manualIp = it },
+                                        label = { Text("Server IP Address", color = Color.Gray) },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        textStyle = androidx.compose.ui.text.TextStyle(color = Color.White, fontSize = 16.sp),
+                                        colors = OutlinedTextFieldDefaults.colors(
+                                            focusedBorderColor = Color.Cyan,
+                                            unfocusedBorderColor = Color.White.copy(alpha = 0.5f),
+                                            focusedLabelColor = Color.Cyan,
+                                        ),
+                                        placeholder = { Text("ej. 192.168.1.100", color = Color.White.copy(alpha = 0.3f)) }
+                                    )
+                                    
+                                    val isConnecting = uiState.connectionStatus == com.example.lazyreps.ui.screens.mapping.ConnectionStatus.CONNECTING
+                                    Button(
+                                        onClick = {
+                                            if (manualIp.isNotBlank() && !isConnecting) {
+                                                viewModel.connectToRemoteServer(manualIp)
+                                                showRoleDialog = false
+                                            }
+                                        },
+                                        modifier = Modifier.fillMaxWidth().height(56.dp),
+                                        shape = RoundedCornerShape(12.dp),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = if (manualIp.isNotBlank()) Color.Cyan else Color.DarkGray,
+                                            contentColor = Color.Black
+                                        ),
+                                        enabled = manualIp.isNotBlank()
+                                    ) {
+                                        if (isConnecting) {
+                                            CircularProgressIndicator(modifier = Modifier.size(24.dp), strokeWidth = 2.dp, color = Color.Black)
+                                            Spacer(Modifier.width(12.dp))
+                                            Text("Connecting...", fontWeight = FontWeight.Bold)
+                                        } else {
+                                            Text("Connect Manually", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -306,17 +396,18 @@ fun MappingScreen(
         }
     }
     
-    Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+    Box(modifier = Modifier.fillMaxSize().background(Color.Transparent)) {
 
         if (uiState.errorMessage != null) {
-            AlertDialog(
+            PremiumDialog(
                 onDismissRequest = { viewModel.dismissError() },
-                title = { Text("Mensaje") },
-                text = { Text(uiState.errorMessage ?: "Unknown message") },
-                confirmButton = {
+                title = "Mensaje"
+            ) {
+                Text(uiState.errorMessage ?: "Unknown message", color = Color.White)
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
                     TextButton(onClick = { viewModel.dismissError() }) { Text("OK") }
                 }
-            )
+            }
         }
 
         if (uiState.showUpdateConfirmation) {
@@ -327,17 +418,16 @@ fun MappingScreen(
                 "Tu versión es más reciente que la del servidor.\n¿Deseas actualizar el proyector a la versión ${uiState.appVersion}?"
             }
             
-            AlertDialog(
+            PremiumDialog(
                 onDismissRequest = { viewModel.cancelUpdate() },
-                title = { Text("Actualización Disponible") },
-                text = { Text(message) },
-                confirmButton = {
-                    Button(onClick = { viewModel.confirmUpdate() }) { Text("Actualizar Ahora") }
-                },
-                dismissButton = {
+                title = "Actualización Disponible"
+            ) {
+                Text(message, color = Color.White)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                     TextButton(onClick = { viewModel.cancelUpdate() }) { Text("Más tarde") }
+                    Button(onClick = { viewModel.confirmUpdate() }) { Text("Actualizar Ahora") }
                 }
-            )
+            }
         }
 
 
@@ -347,177 +437,293 @@ fun MappingScreen(
         val serverWidth = uiState.screenWidth
         val serverHeight = uiState.screenHeight
         
-        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-            val containerW = maxWidth.value
-            val containerH = maxHeight.value
-            
-            val contentModifier = if (uiState.executionMode == ExecutionMode.CLIENT && serverWidth > 0 && serverHeight > 0) {
-                val serverAspect = serverWidth / serverHeight
-                val containerAspect = containerW / containerH
-                
-                if (containerAspect > serverAspect) {
-                    Modifier.height(containerH.dp).width((containerH * serverAspect).dp)
-                } else {
-                    Modifier.width(containerW.dp).height((containerW / serverAspect).dp)
+    // --- Z-LAYERING ARCHITECTURE (Compose Layer) ---
+    Box(modifier = Modifier.fillMaxSize()) {
+        // LAYER 1: THE UI (Dynamic Overlay)
+        // Sitting on top of the native GLSurfaceView defined in activity_main.xml
+        Box(modifier = Modifier.fillMaxSize()) {
+            // LAYER 2: Loading Overlay (Visual Feedback during video setup)
+            if (uiState.isLoading) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.5f))
+                        .zIndex(100f),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(color = Color.Cyan)
                 }
-            } else {
-                Modifier.fillMaxSize()
             }
-
-            var scale by remember { mutableStateOf(1f) }
-            var offset by remember { mutableStateOf(Offset.Zero) }
-            val state = rememberTransformableState { zoomChange, panChange, _ ->
-                scale = (scale * zoomChange).coerceIn(0.5f, 5f)
-                offset += panChange
-            }
-            
-            // Area de visualización del proyector (Canvas) con fondo oscuro para delimitar en el celular
-            Box(
-                modifier = contentModifier
-                    .align(Alignment.Center)
-                    // Añadimos un fondo oscuro para ver el área real del proyector en el celular
-                    .background(Color(0xFF0A0A0A))
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        translationX = offset.x,
-                        translationY = offset.y
-                    )
-                    .transformable(state = state)
-            ) {
-                AndroidView(
-                    factory = { ctx ->
-                        GLSurfaceView(ctx).apply {
-                            setEGLContextClientVersion(2)
-                            // Request stencil buffer (RGBA8888, 16-bit depth, 8-bit stencil)
-                            setEGLConfigChooser(8, 8, 8, 8, 16, 8)
-                            // Usar el renderer local que ha sido recordado (remember)
-                            setRenderer(renderer)
-                            renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
-                            
-                            // Importante: Vincular los callbacks para renderizado bajo demanda
-                            renderer.onFrameAvailable = { requestRender() }
-                            renderer.requestRender = { requestRender() }
-                            renderer.logBreadcrumb = { viewModel.logBreadcrumb(it) }
-                        }
-                    },
-                    modifier = Modifier.fillMaxSize()
-                )
- 
-                // Dibujar guías siempre en el celular, o si no estamos en modo proyección en el proyector
-                if (uiState.executionMode == ExecutionMode.CLIENT || !uiState.isProjectionMode) {
-                    ReferenceGrid()
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val containerW = maxWidth.value
+                val containerH = maxHeight.value
+                
+                val contentModifier = if (uiState.executionMode == ExecutionMode.CLIENT && serverWidth > 0 && serverHeight > 0) {
+                    val serverAspect = serverWidth / serverHeight
+                    val containerAspect = containerW / containerH
                     
-                    // Helper function for point-in-polygon test
-                    fun isPointInPolygon(x: Float, y: Float, corners: FloatArray): Boolean {
-                        val n = corners.size / 2
-                        var inside = false
-                        var j = n - 1
-                        for (i in 0 until n) {
-                            val xi = corners[i * 2]
-                            val yi = corners[i * 2 + 1]
-                            val xj = corners[j * 2]
-                            val yj = corners[j * 2 + 1]
-                            if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
-                                inside = !inside
-                            }
-                            j = i
+                    if (containerAspect > serverAspect) {
+                        Modifier.height(containerH.dp).width((containerH * serverAspect).dp)
+                    } else {
+                        Modifier.width(containerW.dp).height((containerW / serverAspect).dp)
+                    }
+                } else {
+                    Modifier.fillMaxSize()
+                }
+
+                val glSurfaceView = remember {
+                    (context as? android.app.Activity)?.findViewById<android.view.View>(com.example.lazyreps.R.id.gl_surface_view)
+                }
+
+                val scale = uiState.viewScale
+                val offset = uiState.viewOffset
+                
+                // [v1.8.1] Pivot-Point Zoom & Conditional Pan logic
+                // We don't use rememberTransformableState because it doesn't provide centroid for pivot logic.
+
+                // [v1.8.0] Persistence synchronization when entering/returning
+                DisposableEffect(uiState.viewScale, uiState.viewOffset, uiState.isProjectionMode, containerW, containerH, uiState.executionMode) {
+                    val updateGlLayoutParams = {
+                        glSurfaceView?.let { view ->
+                             if (uiState.executionMode == ExecutionMode.CLIENT && serverWidth > 0 && serverHeight > 0) {
+                                  val serverAspect = serverWidth / serverHeight
+                                  val containerAspect = containerW / containerH
+                                  val targetW: Float
+                                  val targetH: Float
+                                  
+                                  if (containerAspect > serverAspect) {
+                                      targetH = containerH
+                                      targetW = containerH * serverAspect
+                                  } else {
+                                      targetW = containerW
+                                      targetH = containerW / serverAspect
+                                  }
+                                  
+                                  val params = view.layoutParams
+                                  if (params.width != targetW.dp.value.toInt() || params.height != targetH.dp.value.toInt()) {
+                                       val density = context.resources.displayMetrics.density
+                                       params.width = (targetW * density).toInt()
+                                       params.height = (targetH * density).toInt()
+                                       // Center it
+                                       if (params is android.widget.FrameLayout.LayoutParams) {
+                                            params.gravity = android.view.Gravity.CENTER
+                                       }
+                                       view.layoutParams = params
+                                  }
+                             } else {
+                                  // Reset to match_parent for Server/Standalone
+                                  val params = view.layoutParams
+                                  if (params.width != android.view.ViewGroup.LayoutParams.MATCH_PARENT) {
+                                       params.width = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                       params.height = android.view.ViewGroup.LayoutParams.MATCH_PARENT
+                                       view.layoutParams = params
+                                  }
+                             }
                         }
-                        return inside
+                    }
+                
+                    if (!uiState.isProjectionMode) {
+                        glSurfaceView?.let { view ->
+                            view.scaleX = uiState.viewScale
+                            view.scaleY = uiState.viewScale
+                            view.translationX = uiState.viewOffset.x
+                            view.translationY = uiState.viewOffset.y
+                        }
+                    } else {
+                        // Projection Mode MUST be 1.0 zoom (clean reset)
+                        glSurfaceView?.let { view ->
+                            view.scaleX = 1f
+                            view.scaleY = 1f
+                            view.translationX = 0f
+                            view.translationY = 0f
+                        }
                     }
                     
-                    // GLOBAL TOUCH LAYER - Handles surface selection (sits below handles)
-                    // This layer allows selecting any surface by tapping on it
-                    Canvas(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .pointerInput(uiState.surfaces.size, uiState.selectedSurfaceId) {
-                                detectTapGestures { offset ->
-                                    // Convert pixel coordinates to [0,1]
-                                    val x = offset.x / size.width
-                                    val y = offset.y / size.height
-                                    
-                                    // Find ALL surfaces that contain this point (in reverse order for z-order)
-                                    val surfacesUnderTouch = uiState.surfaces.reversed().filter { surface ->
-                                        isPointInPolygon(x, y, surface.corners)
-                                    }
-                                    
-                                    if (surfacesUnderTouch.isNotEmpty()) {
-                                        // If there's a selected surface under touch and multiple surfaces overlap, cycle
-                                        val currentlySelected = surfacesUnderTouch.find { it.id == uiState.selectedSurfaceId }
-                                        
-                                        if (currentlySelected != null && surfacesUnderTouch.size > 1) {
-                                            // Cycle to the next surface
-                                            val currentIndex = surfacesUnderTouch.indexOf(currentlySelected)
-                                            val nextIndex = (currentIndex + 1) % surfacesUnderTouch.size
-                                            viewModel.selectSurface(surfacesUnderTouch[nextIndex].id)
-                                        } else {
-                                            // Select the first one (topmost in z-order)
-                                            viewModel.selectSurface(surfacesUnderTouch.first().id)
-                                        }
+                    updateGlLayoutParams()
+                    
+                    onDispose { }
+                }
+                
+                // UI Interaction Area (Coincides with Projector Output or Remote Preview)
+                Box(
+                    modifier = contentModifier
+                        .align(Alignment.Center)
+                        .pointerInput(Unit) {
+                            detectTransformGestures { centroid: androidx.compose.ui.geometry.Offset, pan: androidx.compose.ui.geometry.Offset, zoom: Float, _ ->
+                                val currentScale = uiState.viewScale
+                                val currentOffset = uiState.viewOffset
+                                
+                                val newScale = (currentScale * zoom).coerceIn(0.5f, 5f)
+                                val effectivePan = if (newScale > 1.01f) pan else androidx.compose.ui.geometry.Offset.Zero
+                                
+                                // pivot = centroid. formula: (offset - centroid) * zoom + centroid + pan
+                                val newOffset = (currentOffset - centroid) * zoom + centroid + effectivePan
+                                
+                                viewModel.updateViewTransform(newScale, newOffset)
+                                
+                                // Real-time sync
+                                if (!uiState.isProjectionMode) {
+                                    glSurfaceView?.let { view ->
+                                        view.scaleX = newScale
+                                        view.scaleY = newScale
+                                        view.translationX = newOffset.x
+                                        view.translationY = newOffset.y
                                     }
                                 }
                             }
-                    ) {
-                        // Empty canvas - just for touch detection
+                        }
+                ) {
+                    // Dibujar guías siempre en el celular, o si no estamos en modo proyección en el proyector
+                    if (uiState.executionMode == ExecutionMode.CLIENT || !uiState.isProjectionMode) {
+                        ReferenceGrid(scale = scale, offset = offset)
+                        
+                        // Helper function for point-in-polygon test
+                        fun isPointInPolygon(x: Float, y: Float, corners: FloatArray): Boolean {
+                            val n = corners.size / 2
+                            var inside = false
+                            var j = n - 1
+                            for (i in 0 until n) {
+                                val xi = corners[i * 2]
+                                val yi = corners[i * 2 + 1]
+                                val xj = corners[j * 2]
+                                val yj = corners[j * 2 + 1]
+                                if ((yi > y) != (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) {
+                                    inside = !inside
+                                }
+                                j = i
+                            }
+                            return inside
+                        }
+                        
+                        // GLOBAL TOUCH LAYER - Handles surface selection (sits below handles)
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .pointerInput(uiState.surfaces.size, uiState.selectedSurfaceId, scale, offset) {
+                                    detectTapGestures { touchOffset ->
+                                        // Manual Reverse Transformation to find normalize coordinates (0..1)
+                                        // X_norm = ((TouchX - OffsetX - W/2) / Scale + W/2) / W
+                                        val x = (((touchOffset.x - offset.x) - size.width/2) / scale + size.width/2) / size.width
+                                        val y = (((touchOffset.y - offset.y) - size.height/2) / scale + size.height/2) / size.height
+                                        
+                                        val surfacesUnderTouch = uiState.surfaces.reversed().filter { surface ->
+                                            isPointInPolygon(x, y, surface.corners)
+                                        }
+                                        if (surfacesUnderTouch.isNotEmpty()) {
+                                            val currentlySelected = surfacesUnderTouch.find { it.id == uiState.selectedSurfaceId }
+                                            if (currentlySelected != null && surfacesUnderTouch.size > 1) {
+                                                val currentIndex = surfacesUnderTouch.indexOf(currentlySelected)
+                                                val nextIndex = (currentIndex + 1) % surfacesUnderTouch.size
+                                                viewModel.selectSurface(surfacesUnderTouch[nextIndex].id)
+                                            } else {
+                                                viewModel.selectSurface(surfacesUnderTouch.first().id)
+                                            }
+                                        }
+                                    }
+                                }
+                        ) { }
+                        
+                        uiState.surfaces.forEach { surface ->
+                            SurfaceHandles(
+                                surface = surface,
+                                selectedSurfaceId = uiState.selectedSurfaceId,
+                                viewScale = scale,
+                                viewOffset = offset,
+                                onPointsUpdated = { corners, recordHistory, initialInverse -> 
+                                    viewModel.updateSurfaceCorners(surface.id, corners, recordHistory = recordHistory, initialInverse = initialInverse)
+                                },
+                                onSelect = { viewModel.selectSurface(surface.id) },
+                                onAddPointToSide = { idx -> viewModel.addPointToSide(surface.id, idx) },
+                                onMoveSurface = { dx, dy, recordHistory, initialInverse -> 
+                                    viewModel.moveSurface(surface.id, dx, dy, recordHistory = recordHistory, initialInverse = initialInverse)
+                                },
+                                onTransformSurface = { f, rot, recordHistory, initialInverse -> 
+                                    viewModel.transformSurfaceCorners(surface.id, f, rot, recordHistory = recordHistory, initialInverse = initialInverse)
+                                },
+                                onInteractionStateChange = { isDragging ->
+                                    viewModel.setLocalDragging(isDragging)
+                                },
+                                onDeleteSurface = { showDeleteConfirm = surface.id },
+                                isNebulaMode = uiState.executionMode == ExecutionMode.SERVER
+                            )
+                        }
                     }
-                    
-                    // Render SurfaceHandles on top (they will receive touches for handles)
-                    uiState.surfaces.forEach { surface ->
-                        SurfaceHandles(
-                            surface = surface,
-                            selectedSurfaceId = uiState.selectedSurfaceId,
-                            onPointsUpdated = { corners ->
-                                viewModel.updateSurfaceCorners(surface.id, corners)
-                            },
-                            onSelect = { viewModel.selectSurface(surface.id) },
-                            onAddPointToSide = { side -> viewModel.addPointToSide(surface.id, side) },
-                            onMoveSurface = { dx, dy -> viewModel.moveSurface(surface.id, dx, dy) },
-                            onScaleSurface = { factor -> viewModel.scaleSurface(surface.id, factor) },
-                            onDeleteSurface = { showDeleteConfirm = surface.id },
-                            isNebulaMode = uiState.executionMode == ExecutionMode.CLIENT
+                }
+            }
+
+        // [v1.8.0] Zoom Indicator & Reset Overlay
+            androidx.compose.animation.AnimatedVisibility(
+                visible = uiState.viewScale != 1f || uiState.viewOffset != androidx.compose.ui.geometry.Offset.Zero,
+                enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.expandIn(expandFrom = Alignment.Center),
+                exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.shrinkOut(shrinkTowards = Alignment.Center),
+                modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).padding(top = 80.dp)
+            ) {
+                Surface(
+                    color = Color.Black.copy(alpha = 0.6f),
+                    shape = RoundedCornerShape(20.dp),
+                    border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.5f)),
+                    onClick = { viewModel.resetViewTransform() }
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Zoom: ${(uiState.viewScale * 100).toInt()}%",
+                            color = Color.Cyan,
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "Reset Zoom",
+                            tint = Color.Cyan,
+                            modifier = Modifier.size(16.dp)
                         )
                     }
                 }
             }
-        }
 
-        // Controles de la interfaz
-        val shouldHideUI = uiState.executionMode == ExecutionMode.SERVER && uiState.isFullScreen
-        if (!shouldHideUI) {
-            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-                val screenW = maxWidth.value
-                val screenH = maxHeight.value
-                MappingControls(
-                    selectedSurfaceId = uiState.selectedSurfaceId,
-                    onAddSurface = { shape -> viewModel.addSurface(shape, screenW, screenH) },
-                    onToggleProjection = { viewModel.toggleProjectionMode() },
-                    onPickVideo = { openFilePicker(SourceType.VIDEO) },
-                    onClearAll = { showClearConfirm = true },
-                    onOpenProjects = { showProjectsDialog = true },
-                    onSaveProject = { showSaveDialog = true },
-                    onPlayVideos = { viewModel.togglePlayPause() },
-                    onMoveUp = { id -> viewModel.moveSurfaceUp(id) },
-                    onMoveDown = { id -> viewModel.moveSurfaceDown(id) },
-                    onToggleBlack = { id -> viewModel.toggleSurfaceBlack(id) },
-                    onOpenContentSettings = { showContentSettings = true },
-                    onCreateTestShapes = { viewModel.createRandomTestShapes(screenW, screenH) },
-                    isBlack = uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.isBlack ?: false,
-                    hasSurfaces = uiState.surfaces.isNotEmpty(),
-                    isPlaying = uiState.isPlaying,
-                    executionMode = uiState.executionMode,
-                    isConnected = uiState.connectionStatus,
-                    onOpenRoleSettings = { showRoleDialog = true },
-                    onRetryDiscovery = { viewModel.startDiscovery() },
-                    onNavigateToDashboard = onNavigateToDashboard,
-                    isFullScreen = uiState.isFullScreen,
-                    onToggleFullScreen = { viewModel.toggleFullScreen(it) },
-                    onUndo = { viewModel.undo() },
-                    appVersion = uiState.appVersion,
-                    remoteAppVersion = uiState.remoteAppVersion
-                )
+            // UI Controls
+            val shouldHideUI = uiState.executionMode == ExecutionMode.SERVER && uiState.isFullScreen
+            if (!shouldHideUI) {
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val screenW = maxWidth.value
+                    val screenH = maxHeight.value
+                    MappingControls(
+                        selectedSurfaceId = uiState.selectedSurfaceId,
+                        onAddSurface = { shape -> viewModel.addSurface(shape, screenW, screenH) },
+                        onToggleProjection = { viewModel.toggleProjectionMode() },
+                        onPickVideo = { openFilePicker(SourceType.VIDEO) },
+                        onClearAll = { showClearConfirm = true },
+                        onOpenProjects = { showProjectsDialog = true },
+                        onSaveProject = { showSaveDialog = true },
+                        onPlayVideos = { viewModel.togglePlayPause() },
+                        onMoveUp = { id -> viewModel.moveSurfaceUp(id) },
+                        onMoveDown = { id -> viewModel.moveSurfaceDown(id) },
+                        onToggleBlack = { id -> viewModel.toggleSurfaceBlack(id) },
+                        onOpenContentSettings = { showContentSettings = true },
+                        isBlack = uiState.surfaces.find { it.id == uiState.selectedSurfaceId }?.isBlack ?: false,
+                        hasSurfaces = uiState.surfaces.isNotEmpty(),
+                        isPlaying = uiState.isPlaying,
+                        executionMode = uiState.executionMode,
+                        isConnected = uiState.connectionStatus,
+                        onOpenRoleSettings = { showRoleDialog = true },
+                        onRetryDiscovery = { viewModel.startDiscovery() },
+                        onNavigateToDashboard = onNavigateToDashboard,
+                        isFullScreen = uiState.isFullScreen,
+                        onToggleFullScreen = { viewModel.toggleFullScreen(it) },
+                        onUndo = { viewModel.undo() },
+                        onRedo = { viewModel.redo() },
+                        canUndo = uiState.canUndo,
+                        canRedo = uiState.canRedo,
+                        appVersion = uiState.appVersion,
+                        remoteAppVersion = uiState.remoteAppVersion
+                    )
+                }
             }
         }
+    }
 
     // Manejo de Pantalla Completa (Inmersive Mode)
     val view = LocalView.current
@@ -534,51 +740,51 @@ fun MappingScreen(
 
     // Diálogos
         if (showDeleteConfirm != null) {
-            AlertDialog(
+            PremiumDialog(
                 onDismissRequest = { showDeleteConfirm = null },
-                title = { Text("¿Borrar superficie?") },
-                text = { Text("Esta acción no se puede deshacer.") },
-                confirmButton = {
+                title = "¿Borrar superficie?"
+            ) {
+                Text("Esta acción no se puede deshacer.", color = Color.White)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { showDeleteConfirm = null }) { Text("Cancelar") }
                     TextButton(onClick = {
                         showDeleteConfirm?.let { viewModel.removeSurface(it) }
                         showDeleteConfirm = null
                     }) { Text("Borrar", color = Color.Red) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showDeleteConfirm = null }) { Text("Cancelar") }
                 }
-            )
+            }
         }
 
         if (showClearConfirm) {
-            AlertDialog(
+            PremiumDialog(
                 onDismissRequest = { showClearConfirm = false },
-                title = { Text("¿Limpiar todo?") },
-                text = { Text("Se borrarán todas las superficies actuales.") },
-                confirmButton = {
+                title = "¿Limpiar todo?"
+            ) {
+                Text("Se borrarán todas las superficies actuales.", color = Color.White)
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { showClearConfirm = false }) { Text("Cancelar") }
                     TextButton(onClick = {
                         viewModel.clearAll()
                         showClearConfirm = false
                     }) { Text("Limpiar", color = Color.Red) }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showClearConfirm = false }) { Text("Cancelar") }
                 }
-            )
+            }
         }
 
         if (showSaveDialog) {
-            AlertDialog(
+            PremiumDialog(
                 onDismissRequest = { showSaveDialog = false },
-                title = { Text("Guardar Proyecto") },
-                text = {
-                    TextField(
-                        value = projectName,
-                        onValueChange = { projectName = it },
-                        placeholder = { Text("Nombre del proyecto") }
-                    )
-                },
-                confirmButton = {
+                title = "Guardar Proyecto"
+            ) {
+                OutlinedTextField(
+                    value = projectName,
+                    onValueChange = { projectName = it },
+                    placeholder = { Text("Nombre del proyecto", color = Color.Gray) },
+                    modifier = Modifier.fillMaxWidth(),
+                    textStyle = androidx.compose.ui.text.TextStyle(color = Color.White)
+                )
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    TextButton(onClick = { showSaveDialog = false }) { Text("Cancelar") }
                     TextButton(onClick = {
                         if (projectName.isNotBlank()) {
                             viewModel.saveProject(projectName)
@@ -586,11 +792,8 @@ fun MappingScreen(
                             showSaveDialog = false
                         }
                     }) { Text("Guardar") }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showSaveDialog = false }) { Text("Cancelar") }
                 }
-            )
+            }
         }
 
     if (showProjectsDialog) {
@@ -710,6 +913,22 @@ fun MappingScreen(
                     Spacer(modifier = Modifier.height(24.dp))
                     Text(
                         "Por favor, no cierres la aplicación.\nUna vez finalizado el envío, deberás aceptar la instalación en el Proyector.",
+                        color = Color.White.copy(alpha = 0.7f),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                }
+
+                // [v1.13.1] Close Button
+                androidx.compose.material3.IconButton(
+                    onClick = { viewModel.dismissUpdateOverlay() },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                ) {
+                    androidx.compose.material3.Icon(
+                        imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                        contentDescription = "Cerrar",
+                        tint = Color.White
                     )
                 }
             }
@@ -723,13 +942,17 @@ fun MappingScreen(
                     onDismissRequest = { showContentSettings = false },
                     onSourceTypeChange = { viewModel.dispatchCommand(MappingCommand.SetSourceType(surface.id, it)) },
                     onShaderIdChange = { viewModel.dispatchCommand(MappingCommand.SetShaderId(surface.id, it)) },
-                    onParamChange = { name, value -> viewModel.dispatchCommand(MappingCommand.UpdateShaderParameter(surface.id, name, value)) },
-                    onToggleBlack = { viewModel.dispatchCommand(MappingCommand.ToggleBlackMode(surface.id)) },
-                    onMoveUp = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "UP")) },
-                    onMoveDown = { viewModel.dispatchCommand(MappingCommand.MoveLayer(surface.id, "DOWN")) },
+                    onParamChange = { name, value, record, initial -> 
+                        viewModel.updateShaderParameter(surface.id, name, value, recordHistory = record, initialInverse = initial) 
+                    },
+                    onToggleBlack = { viewModel.toggleSurfaceBlack(surface.id) },
+                    onMoveUp = { viewModel.moveSurfaceUp(surface.id) },
+                    onMoveDown = { viewModel.moveSurfaceDown(surface.id) },
                     onPickVideo = { openFilePicker(SourceType.VIDEO) },
                     // Phase 1 extras
-                    onOpacityChange = { viewModel.setOpacity(surface.id, it) },
+                    onOpacityChange = { v, record, initial -> 
+                        viewModel.setOpacity(surface.id, v, recordHistory = record, initialInverse = initial) 
+                    },
                     onToggleVisibility = { viewModel.toggleVisibility(surface.id) },
                     onNameChange = { viewModel.setLayerName(surface.id, it) },
                     onRotationChange = { viewModel.rotateSurface(surface.id, it) },
@@ -737,6 +960,7 @@ fun MappingScreen(
                     onFlipVertical = { viewModel.flipSurface(surface.id, surface.flipHorizontal, !surface.flipVertical) },
                     // Phase 2 extras
                     onPickImage = { openFilePicker(SourceType.IMAGE) },
+                    onPickCamera = { viewModel.setCameraForSurface(surface.id) },
                     onTogglePlay = { viewModel.setLayerPlayState(surface.id, !surface.isPlaying) },
                     onPlaybackSpeedChange = { viewModel.setPlaybackSpeed(surface.id, it) },
                     shaderPresets = uiState.shaderPresets,
@@ -750,7 +974,8 @@ fun MappingScreen(
                         surface.shaderId?.let { shaderId ->
                             viewModel.deleteShaderPreset(presetId, shaderId)
                         }
-                    }
+                    },
+                    onToggleNegative = { viewModel.toggleSurfaceNegative(surface.id) }
                 )
             }
         }
@@ -771,7 +996,6 @@ fun MappingControls(
     onMoveDown: (String) -> Unit,
     onToggleBlack: (String) -> Unit,
     onOpenContentSettings: () -> Unit,
-    onCreateTestShapes: () -> Unit,
     isBlack: Boolean,
     hasSurfaces: Boolean,
     isPlaying: Boolean,
@@ -783,6 +1007,9 @@ fun MappingControls(
     isFullScreen: Boolean,
     onToggleFullScreen: (Boolean) -> Unit,
     onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
     appVersion: String,
     remoteAppVersion: String? = null
 ) {
@@ -879,20 +1106,19 @@ fun MappingControls(
                 )
             }
             
-            // Test button - creates random shapes with random shaders
-            GlassIconButton(
-                onClick = onCreateTestShapes,
-                icon = Icons.Default.Refresh,
-                active = false,
-                activeColor = Color(0xFFFFEB3B)
-            )
-
-            // BOTÓN DESHACER (UNDO)
+            // BOTONES HISTORIAL (UNDO/REDO)
             GlassIconButton(
                 onClick = onUndo,
-                icon = Icons.Default.Refresh,
-                active = false,
-                activeColor = Color.White
+                icon = Icons.Default.Undo,
+                active = canUndo,
+                activeColor = if (canUndo) Color.White else Color.Gray.copy(alpha = 0.5f)
+            )
+
+            GlassIconButton(
+                onClick = onRedo,
+                icon = Icons.Default.Redo,
+                active = canRedo,
+                activeColor = if (canRedo) Color.White else Color.Gray.copy(alpha = 0.5f)
             )
         }
 
@@ -965,6 +1191,7 @@ fun MappingControls(
 
             // Botones Flotantes Principales
             Row(
+                modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(20.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -1081,11 +1308,14 @@ fun ShapeIcon(shape: MappingShape) {
 fun SurfaceHandles(
     surface: com.example.lazyreps.core.models.MappingSurface,
     selectedSurfaceId: String?,
-    onPointsUpdated: (FloatArray) -> Unit,
+    viewScale: Float = 1f,
+    viewOffset: androidx.compose.ui.geometry.Offset = androidx.compose.ui.geometry.Offset.Zero,
+    onPointsUpdated: (FloatArray, Boolean, MappingCommand?) -> Unit,
     onSelect: () -> Unit,
     onAddPointToSide: (Int) -> Unit,
-    onMoveSurface: (Float, Float) -> Unit,
-    onScaleSurface: (Float) -> Unit,
+    onMoveSurface: (Float, Float, Boolean, MappingCommand?) -> Unit,
+    onTransformSurface: (scale: Float, rotation: Float, Boolean, MappingCommand?) -> Unit,
+    onInteractionStateChange: (Boolean) -> Unit,
     onDeleteSurface: () -> Unit,
     isNebulaMode: Boolean // Nueva flag para modo "Control Remoto"
 ) {
@@ -1095,6 +1325,9 @@ fun SurfaceHandles(
     // Estado para "Agarrar" handles en modo Nebula
     // Guardamos qué handle tenemos agarrado: Index del corner, o -1 para mover, -2 para escalar
     var grabbedHandleType by remember { mutableStateOf<Int?>(null) } 
+
+    // Estado para Undo/Redo (Drag Squashing)
+    var dragInitialInverse by remember { mutableStateOf<MappingCommand?>(null) }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val width = constraints.maxWidth.toFloat()
@@ -1128,12 +1361,12 @@ fun SurfaceHandles(
                                   when (grabbedHandleType) {
                                       -1 -> { // Move Whole Surface
                                           // Delta relativo puro
-                                          onMoveSurface(dxRaw / width, dyRaw / height)
+                                          onMoveSurface(dxRaw / width, dyRaw / height, false, null)
                                       }
                                       -2 -> { // Scale
                                            // Escala basado en distancia X recorrida
                                            val factor = 1f + (dxRaw / width) * 2f
-                                           onScaleSurface(factor)
+                                           onTransformSurface(factor, 0f, false, null)
                                       }
                                       else -> { // Corner Index
                                           val idx = grabbedHandleType!!
@@ -1141,7 +1374,7 @@ fun SurfaceHandles(
                                               val newCorners = corners.copyOf()
                                               newCorners[idx * 2] = (newCorners[idx * 2] + dxRaw / width).coerceIn(0f, 1f)
                                               newCorners[idx * 2 + 1] = (newCorners[idx * 2 + 1] + dyRaw / height).coerceIn(0f, 1f)
-                                              onPointsUpdated(newCorners)
+                                              onPointsUpdated(newCorners, false, null)
                                           }
                                       }
                                   }
@@ -1167,25 +1400,38 @@ fun SurfaceHandles(
             val py = corners[i * 2 + 1]
             val isGrabbed = (grabbedHandleType == i)
             
+            // [v1.8.1] Manual Transform formula: (coord - center) * scale + center + offset
+            val tx = (px * width - width/2) * viewScale + width/2 + viewOffset.x
+            val ty = (py * height - height/2) * viewScale + height/2 + viewOffset.y
+
             CornerHandle(
-                x = px,
-                y = py,
+                x = tx / width, // CornerHandle still expects norm but we feed it "pre-zoomed" norm
+                y = ty / height,
                 screenWidth = width,
                 screenHeight = height,
                 isSelected = isSelected,
                 color = if (isGrabbed) grabbingColor else Color.Cyan,
+                onDragStart = {
+                    onInteractionStateChange(true)
+                    dragInitialInverse = MappingCommand.UpdateAllCorners(surface.id, corners.copyOf())
+                },
+                onDragEnd = {
+                    onInteractionStateChange(false)
+                    onPointsUpdated(corners, true, dragInitialInverse)
+                    dragInitialInverse = null
+                },
                 onDrag = { dx, dy ->
-                    // Drag normal (Touch) - Habilitado siempre para permitir edición desde celular
+                    // Zoom-Aware Drag Delta (Inverse Scale)
+                    val deltaX = dx / viewScale
+                    val deltaY = dy / viewScale
+                    
                     val newCorners = corners.copyOf()
-                    newCorners[i * 2] = (newCorners[i * 2] + dx / width).coerceIn(0f, 1f)
-                    newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + dy / height).coerceIn(0f, 1f)
-                    onPointsUpdated(newCorners)
+                    newCorners[i * 2] = (newCorners[i * 2] + deltaX / width).coerceIn(0f, 1f)
+                    newCorners[i * 2 + 1] = (newCorners[i * 2 + 1] + deltaY / height).coerceIn(0f, 1f)
+                    onPointsUpdated(newCorners, false, null)
                 },
                 onClick = {
-                    // Click para agarrar/soltar en modo Nebula
-                    if (isNebulaMode && isSelected) {
-                        grabbedHandleType = if (grabbedHandleType == i) null else i
-                    }
+                    // Click para seleccionar (pero ya no agarramos handle en modo Nebula aquí para evitar colisiones)
                 }
             )
         }
@@ -1204,19 +1450,33 @@ fun SurfaceHandles(
 
             val isGrabbedMove = (grabbedHandleType == -1)
 
+            // [v1.8.1] Manual Transform
+            val tCX = (centerX * width - width/2) * viewScale + width/2 + viewOffset.x
+            val tCY = (centerY * height - height/2) * viewScale + height/2 + viewOffset.y
+
             MoveHandle(
-                x = centerX,
-                y = centerY,
+                x = tCX / width,
+                y = tCY / height,
                 screenWidth = width,
                 screenHeight = height,
                 color = if (isGrabbedMove) grabbingColor else Color.White.copy(alpha = 0.5f),
+                onDragStart = {
+                    onInteractionStateChange(true)
+                    dragInitialInverse = MappingCommand.UpdateAllCorners(surface.id, corners.copyOf())
+                },
+                onDragEnd = {
+                    onInteractionStateChange(false)
+                    onMoveSurface(0f, 0f, true, dragInitialInverse)
+                    dragInitialInverse = null
+                },
                 onDrag = { dx, dy ->
-                     onMoveSurface(dx, dy)
+                     // Zoom-Aware Move Delta 
+                     // IMPORTANT: dx and dy are ALREADY normalized (0f..1f) by MoveHandle's detectDragGestures (dragAmount.x / screenWidth)
+                     // Here we only need to account for viewScale zooming correctly
+                     onMoveSurface(dx / viewScale, dy / viewScale, false, null)
                 },
                 onClick = {
-                    if (isNebulaMode) {
-                         grabbedHandleType = if (grabbedHandleType == -1) null else -1
-                    }
+                    // Click para seleccionar
                 }
             )
 
@@ -1232,17 +1492,38 @@ fun SurfaceHandles(
                 maxY = maxOf(maxY, corners[i * 2 + 1])
             }
 
+            // Manual Transform for ScaleHandle
+            val scaleXpx = ((maxX + 0.05f) * width - width/2) * viewScale + width/2 + viewOffset.x
+            val scaleYpx = ((maxY + 0.05f) * height - height/2) * viewScale + height/2 + viewOffset.y
+            
+            val cxPx = (centerX * width - width/2) * viewScale + width/2 + viewOffset.x
+            val cyPx = (centerY * height - height/2) * viewScale + height/2 + viewOffset.y
+
             ScaleHandle(
-                x = maxX + 0.05f, // 5% fuera a la derecha
-                y = maxY + 0.05f, // 5% fuera abajo
+                x = scaleXpx / width, 
+                y = scaleYpx / height,
+                centerX = cxPx / width,
+                centerY = cyPx / height,
                 screenWidth = width,
                 screenHeight = height,
-                onScale = { f -> if (!isNebulaMode) onScaleSurface(f) }
+                onDragStart = {
+                    onInteractionStateChange(true)
+                    dragInitialInverse = MappingCommand.UpdateAllCorners(surface.id, corners.copyOf())
+                },
+                onDragEnd = {
+                    onInteractionStateChange(false)
+                    onTransformSurface(1f, 0f, true, dragInitialInverse)
+                    dragInitialInverse = null
+                },
+                onTransform = { f, rot -> 
+                    onTransformSurface(f, rot, false, null) 
+                },
+                onClick = {
+                    // Click para seleccionar
+                }
             )
-            // Nota: Scale en modo Nebula es complejo de mapear a un solo punto x/y, lo omitimos por simplicidad o lo mapeamos a drag X
         }
 
-        // ... (Borrado y Edges igual que antes) ...
         // Botón de Borrado Contextual
         if (isSelected) {
             var minX = 1f
@@ -1258,12 +1539,17 @@ fun SurfaceHandles(
             val marginX = 0.05f // 5%
             val marginY = 0.05f // 5%
             val density = LocalContext.current.resources.displayMetrics.density
+
+            // [v1.8.1] Manual Transform for Delete Button
+            val delXpx = ((maxX + marginX) * width - width/2) * viewScale + width/2 + viewOffset.x
+            val delYpx = ((minY - marginY) * height - height/2) * viewScale + height/2 + viewOffset.y
+
             IconButton(
                 onClick = onDeleteSurface,
                 modifier = Modifier
                     .offset(
-                        x = ((maxX + marginX) * width / density).dp - 15.dp,
-                        y = ((minY - marginY) * height / density).dp - 15.dp
+                        x = (delXpx / density).dp - 15.dp,
+                        y = (delYpx / density).dp - 15.dp
                     )
                     .size(30.dp)
                     .background(Color.Red.copy(alpha = 0.8f), CircleShape)
@@ -1280,9 +1566,17 @@ fun SurfaceHandles(
                 val p1y = corners[i * 2 + 1]
                 val p2x = corners[(i + 1) % n * 2]
                 val p2y = corners[(i + 1) % n * 2 + 1]
+                
+                val midX = (p1x + p2x) / 2f
+                val midY = (p1y + p2y) / 2f
+
+                // [v1.8.1] Manual Transform for EdgeMidpoint
+                val tMidX = (midX * width - width/2) * viewScale + width/2 + viewOffset.x
+                val tMidY = (midY * height - height/2) * viewScale + height/2 + viewOffset.y
+
                 EdgeMidpointHandle(
-                    x = (p1x + p2x) / 2f,
-                    y = (p1y + p2y) / 2f,
+                    x = tMidX / width,
+                    y = tMidY / height,
                     screenWidth = width,
                     screenHeight = height,
                     onClick = { onAddPointToSide(i) }
@@ -1290,18 +1584,22 @@ fun SurfaceHandles(
             }
         }
 
-        // Borde
+        // Borde Canvas (v1.8.1 Vector Zoom)
         Canvas(modifier = Modifier.fillMaxSize()) {
             val vertexCount = corners.size / 2
             if (vertexCount < 2) return@Canvas
             val color = if (isSelected) Color.Cyan else Color.White.copy(alpha = 0.5f)
             val strokeWidth = if (isSelected) 2.dp.toPx() else 1.dp.toPx()
+            
             for (i in 0 until vertexCount) {
-                val startX = corners[i * 2] * width
-                val startY = corners[i * 2 + 1] * height
+                // Manual coordinate transform for drawing
+                val startX = (corners[i * 2] * width - width/2) * viewScale + width/2 + viewOffset.x
+                val startY = (corners[i * 2 + 1] * height - height/2) * viewScale + height/2 + viewOffset.y
+                
                 val nextIdx = (i + 1) % vertexCount
-                val endX = corners[nextIdx * 2] * width
-                val endY = corners[nextIdx * 2 + 1] * height
+                val endX = (corners[nextIdx * 2] * width - width/2) * viewScale + width/2 + viewOffset.x
+                val endY = (corners[nextIdx * 2 + 1] * height - height/2) * viewScale + height/2 + viewOffset.y
+                
                 drawLine(color, androidx.compose.ui.geometry.Offset(startX, startY), androidx.compose.ui.geometry.Offset(endX, endY), strokeWidth)
             }
         }
@@ -1312,12 +1610,24 @@ fun SurfaceHandles(
 fun ScaleHandle(
     x: Float,
     y: Float,
+    centerX: Float,
+    centerY: Float,
     screenWidth: Float,
     screenHeight: Float,
-    onScale: (Float) -> Unit
+    onDragStart: () -> Unit = {},
+    onDragEnd: () -> Unit = {},
+    onTransform: (scaleFactor: Float, rotationDegrees: Float) -> Unit,
+    onClick: () -> Unit = {}
 ) {
     val density = LocalContext.current.resources.displayMetrics.density
-    val currentOnScale by rememberUpdatedState(onScale)
+    val currentOnTransform by rememberUpdatedState(onTransform)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    
+    val currentCxPix by rememberUpdatedState(centerX * screenWidth)
+    val currentCyPix by rememberUpdatedState(centerY * screenHeight)
+    val currentXPos by rememberUpdatedState(x * screenWidth)
+    val currentYPos by rememberUpdatedState(y * screenHeight)
 
     Box(
         modifier = Modifier
@@ -1325,19 +1635,68 @@ fun ScaleHandle(
                 x = (x * screenWidth / density).dp - 15.dp,
                 y = (y * screenHeight / density).dp - 15.dp
             )
-            .size(30.dp)
-            .background(Color.Yellow.copy(alpha = 0.5f), CircleShape)
+            .size(44.dp) // Make handle bigger and easier to grab
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    // Si arrastramos a la derecha ampliamos, a la izquierda reducimos
-                    val factor = 1f + (dragAmount.x / screenWidth) * 2f
-                    currentOnScale(factor)
-                }
+                detectTapGestures(
+                    onTap = { onClick() }
+                )
+            }
+            .pointerInput(Unit) {
+                var dragX = 0f
+                var dragY = 0f
+
+                detectDragGestures(
+                    onDragStart = { offset ->
+                        dragX = currentXPos
+                        dragY = currentYPos
+                        currentOnDragStart() 
+                    },
+                    onDragEnd = { 
+                        currentOnDragEnd()
+                    },
+                    onDragCancel = { 
+                        currentOnDragEnd() 
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        val cx = currentCxPix
+                        val cy = currentCyPix
+                        
+                        val oldX = dragX
+                        val oldY = dragY
+                        val newX = oldX + dragAmount.x
+                        val newY = oldY + dragAmount.y
+                        
+                        // Scale ratio using distance from center
+                        val oldDist = Math.hypot((oldX - cx).toDouble(), (oldY - cy).toDouble()).toFloat()
+                        val newDist = Math.hypot((newX - cx).toDouble(), (newY - cy).toDouble()).toFloat()
+                        var scaleFactor = if (oldDist > 0) newDist / oldDist else 1f
+                        
+                        // Amplify the scaling factor slightly so it's more responsive
+                        scaleFactor = 1f + (scaleFactor - 1f) * 1.5f
+                        
+                        // Angle from center
+                        val oldAngle = Math.atan2((oldY - cy).toDouble(), (oldX - cx).toDouble())
+                        val newAngle = Math.atan2((newY - cy).toDouble(), (newX - cx).toDouble())
+                        val rotDelta = Math.toDegrees(newAngle - oldAngle).toFloat()
+                        
+                        dragX = newX
+                        dragY = newY
+                        
+                        currentOnTransform(scaleFactor, rotDelta)
+                    }
+                )
             },
         contentAlignment = Alignment.Center
     ) {
-        Icon(Icons.Default.Refresh, contentDescription = "Scale", tint = Color.Black.copy(alpha = 0.8f), modifier = Modifier.size(16.dp))
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .background(Color.Green.copy(alpha = 0.8f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(Icons.Default.Refresh, contentDescription = "Scale", tint = Color.Black.copy(alpha = 0.8f), modifier = Modifier.size(16.dp))
+        }
     }
 }
 
@@ -1348,11 +1707,16 @@ fun MoveHandle(
     screenWidth: Float,
     screenHeight: Float,
     color: Color = Color.White.copy(alpha = 0.5f),
+    onDragStart: () -> Unit = {},
+    onDragEnd: () -> Unit = {},
     onDrag: (Float, Float) -> Unit,
     onClick: () -> Unit = {}
 ) {
     val density = LocalContext.current.resources.displayMetrics.density
     val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnClick by rememberUpdatedState(onClick)
 
     Box(
         modifier = Modifier
@@ -1363,12 +1727,17 @@ fun MoveHandle(
             .size(40.dp)
             .background(color, CircleShape)
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    currentOnDrag(dragAmount.x / screenWidth, dragAmount.y / screenHeight)
-                }
+                detectDragGestures(
+                    onDragStart = { currentOnDragStart() },
+                    onDragEnd = { currentOnDragEnd() },
+                    onDragCancel = { currentOnDragEnd() },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        currentOnDrag(dragAmount.x / screenWidth, dragAmount.y / screenHeight)
+                    }
+                )
             }
-            .clickable { onClick() },
+            .clickable { currentOnClick() },
         contentAlignment = Alignment.Center
     ) {
         Icon(Icons.Default.Settings, contentDescription = "Move", tint = Color.Black.copy(alpha = 0.8f))
@@ -1400,26 +1769,37 @@ fun EdgeMidpointHandle(
 }
 
 @Composable
-fun ReferenceGrid() {
+fun ReferenceGrid(
+    scale: Float = 1f, 
+    offset: androidx.compose.ui.geometry.Offset = androidx.compose.ui.geometry.Offset.Zero
+) {
     Canvas(modifier = Modifier.fillMaxSize()) {
         val strokeWidth = 0.5.dp.toPx()
         val color = Color.White.copy(alpha = 0.15f)
         
+        // Transform Logic: (Coord - Center) * Scale + Center + Offset
+        val w = size.width
+        val h = size.height
+
         // Líneas verticales
         for (i in 1 until 10) {
-            val x = size.width * (i / 10f)
-            drawLine(color, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, size.height), strokeWidth)
+            val rawX = w * (i / 10f)
+            val x = (rawX - w/2) * scale + w/2 + offset.x
+            drawLine(color, androidx.compose.ui.geometry.Offset(x, 0f), androidx.compose.ui.geometry.Offset(x, h), strokeWidth)
         }
         
         // Líneas horizontales
         for (i in 1 until 10) {
-            val y = size.height * (i / 10f)
-            drawLine(color, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(size.width, y), strokeWidth)
+            val rawY = h * (i / 10f)
+            val y = (rawY - h/2) * scale + h/2 + offset.y
+            drawLine(color, androidx.compose.ui.geometry.Offset(0f, y), androidx.compose.ui.geometry.Offset(w, y), strokeWidth)
         }
 
         // Centro
-        drawLine(color.copy(alpha = 0.3f), androidx.compose.ui.geometry.Offset(size.width/2, 0f), androidx.compose.ui.geometry.Offset(size.width/2, size.height), strokeWidth * 2)
-        drawLine(color.copy(alpha = 0.3f), androidx.compose.ui.geometry.Offset(0f, size.height/2), androidx.compose.ui.geometry.Offset(size.width, size.height/2), strokeWidth * 2)
+        val cX = (w/2 - w/2) * scale + w/2 + offset.x
+        val cY = (h/2 - h/2) * scale + h/2 + offset.y
+        drawLine(color.copy(alpha = 0.3f), androidx.compose.ui.geometry.Offset(cX, 0f), androidx.compose.ui.geometry.Offset(cX, h), strokeWidth * 2)
+        drawLine(color.copy(alpha = 0.3f), androidx.compose.ui.geometry.Offset(0f, cY), androidx.compose.ui.geometry.Offset(w, cY), strokeWidth * 2)
     }
 }
 
@@ -1431,11 +1811,16 @@ fun CornerHandle(
     screenHeight: Float,
     isSelected: Boolean,
     color: Color = Color.Cyan,
+    onDragStart: () -> Unit = {},
+    onDragEnd: () -> Unit = {},
     onDrag: (Float, Float) -> Unit,
     onClick: () -> Unit = {}
 ) {
     val density = LocalContext.current.resources.displayMetrics.density
     val currentOnDrag by rememberUpdatedState(onDrag)
+    val currentOnDragStart by rememberUpdatedState(onDragStart)
+    val currentOnDragEnd by rememberUpdatedState(onDragEnd)
+    val currentOnClick by rememberUpdatedState(onClick)
 
     Box(
         modifier = Modifier
@@ -1449,12 +1834,17 @@ fun CornerHandle(
                 shape = CircleShape
             )
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    currentOnDrag(dragAmount.x, dragAmount.y)
-                }
+                detectDragGestures(
+                    onDragStart = { currentOnDragStart() },
+                    onDragEnd = { currentOnDragEnd() },
+                    onDragCancel = { currentOnDragEnd() },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        currentOnDrag(dragAmount.x, dragAmount.y)
+                    }
+                )
             }
-            .clickable { onClick() }
+            .clickable { currentOnClick() }
     )
 }
 @Composable
@@ -1464,13 +1854,13 @@ fun SurfaceContentDialog(
     onDismissRequest: () -> Unit,
     onSourceTypeChange: (SourceType) -> Unit,
     onShaderIdChange: (String) -> Unit,
-    onParamChange: (String, Float) -> Unit,
+    onParamChange: (String, Float, Boolean, MappingCommand?) -> Unit,
     onToggleBlack: () -> Unit,
     onMoveUp: () -> Unit,
     onMoveDown: () -> Unit,
     onPickVideo: () -> Unit,
     // Phase 1 extras
-    onOpacityChange: (Float) -> Unit,
+    onOpacityChange: (Float, Boolean, MappingCommand?) -> Unit,
     onToggleVisibility: () -> Unit,
     onNameChange: (String) -> Unit,
     onRotationChange: (Float) -> Unit,
@@ -1478,14 +1868,17 @@ fun SurfaceContentDialog(
     onFlipVertical: () -> Unit,
     // Phase 2 extras
     onPickImage: () -> Unit,
+    onPickCamera: () -> Unit,
     onTogglePlay: () -> Unit,
     onPlaybackSpeedChange: (Float) -> Unit,
     shaderPresets: List<ShaderPreset>,
     onSavePreset: (String) -> Unit,
     onApplyPreset: (ShaderPreset) -> Unit,
-    onDeletePreset: (String) -> Unit
+    onDeletePreset: (String) -> Unit,
+    onToggleNegative: () -> Unit
 ) {
     var isInteracting by remember { mutableStateOf(false) }
+    var initialParamInverse by remember { mutableStateOf<MappingCommand?>(null) }
     val animatedAlpha by animateFloatAsState(
         targetValue = if (isInteracting) 0.1f else 1.0f,
         animationSpec = tween(durationMillis = 400),
@@ -1550,7 +1943,7 @@ fun SurfaceContentDialog(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            Box(modifier = Modifier.weight(1f, fill = false).padding(horizontal = 4.dp)) {
+            Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)) {
                 when (selectedTab) {
                     0 -> { // Capa (General)
                         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -1563,10 +1956,17 @@ fun SurfaceContentDialog(
                                 Slider(
                                     value = surface.opacity,
                                     onValueChange = { 
+                                        if (initialParamInverse == null) {
+                                            initialParamInverse = MappingCommand.SetOpacity(surface.id, surface.opacity)
+                                        }
                                         isInteracting = true
-                                        onOpacityChange(it) 
+                                        onOpacityChange(it, false, null) 
                                     },
-                                    onValueChangeFinished = { isInteracting = false },
+                                    onValueChangeFinished = { 
+                                        isInteracting = false 
+                                        onOpacityChange(surface.opacity, true, initialParamInverse)
+                                        initialParamInverse = null
+                                    },
                                     modifier = Modifier.height(30.dp)
                                 )
                             }
@@ -1580,6 +1980,19 @@ fun SurfaceContentDialog(
                                 Switch(
                                     checked = surface.isBlack,
                                     onCheckedChange = { onToggleBlack() },
+                                    colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan)
+                                )
+                            }
+
+                            // [v1.15.0] Punch Hole / Layer Occlusion
+                            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                                Column {
+                                    Text("Perforar Capas", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                                    Text("Corta el contenido de abajo", color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                                }
+                                Switch(
+                                    checked = surface.isNegative,
+                                    onCheckedChange = { onToggleNegative() },
                                     colors = SwitchDefaults.colors(checkedThumbColor = Color.Cyan)
                                 )
                             }
@@ -1630,6 +2043,13 @@ fun SurfaceContentDialog(
                                     modifier = Modifier.weight(1f),
                                     onClick = { onSourceTypeChange(SourceType.SHADER) }
                                 )
+                                SourceCard(
+                                    title = "Cámara",
+                                    icon = Icons.Default.Warning, // Or VideoCameraBack if available, using Warning as placeholder
+                                    isSelected = surface.sourceType == SourceType.MJPEG_CAMERA,
+                                    modifier = Modifier.weight(1f),
+                                    onClick = { onPickCamera() }
+                                )
                             }
 
                             if (surface.sourceType == SourceType.VIDEO || surface.sourceType == SourceType.IMAGE) {
@@ -1650,7 +2070,7 @@ fun SurfaceContentDialog(
                             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                                 // Shader Selector
                                 LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    items(shaderRegistry.keys.toList()) { shaderId ->
+                                    items(shaderRegistry.keys.toList().sorted()) { shaderId ->
                                         Surface(
                                             onClick = { onShaderIdChange(shaderId) },
                                             color = if (surface.shaderId == shaderId) Color.Cyan.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
@@ -1675,10 +2095,17 @@ fun SurfaceContentDialog(
                                                 Slider(
                                                     value = value,
                                                     onValueChange = { 
+                                                        if (initialParamInverse == null) {
+                                                            initialParamInverse = MappingCommand.UpdateShaderParameter(surface.id, param, value)
+                                                        }
                                                         isInteracting = true
-                                                        onParamChange(param, it) 
+                                                        onParamChange(param, it, false, null) 
                                                     },
-                                                    onValueChangeFinished = { isInteracting = false },
+                                                    onValueChangeFinished = { 
+                                                        isInteracting = false 
+                                                        onParamChange(param, surface.shaderParameters[param] ?: value, true, initialParamInverse)
+                                                        initialParamInverse = null
+                                                    },
                                                     modifier = Modifier.height(26.dp)
                                                 )
                                             }
@@ -1878,29 +2305,88 @@ fun PremiumDialog(
     alpha: Float = 1.0f,
     content: @Composable () -> Unit
 ) {
-    androidx.compose.ui.window.Dialog(onDismissRequest = onDismissRequest) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.8f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismissRequest
+            )
+            .zIndex(200f),
+        contentAlignment = Alignment.Center
+    ) {
         Surface(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.85f) // At most 85% of parent
+                .wrapContentHeight(Alignment.CenterVertically) // Wrap to content size
                 .graphicsLayer(alpha = alpha)
-                .padding(16.dp),
+                .padding(16.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {} 
+                )
+                .imePadding(),
             shape = RoundedCornerShape(28.dp),
             color = Color(0xFF1A1C1E).copy(alpha = 0.95f),
             border = BorderStroke(1.dp, Color.White.copy(alpha = 0.15f)),
             shadowElevation = 24.dp
         ) {
             Column(
-                modifier = Modifier.padding(24.dp),
+                modifier = Modifier
+                    .padding(24.dp)
+                    .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(20.dp)
             ) {
-                Text(
-                    text = title,
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    IconButton(onClick = onDismissRequest) {
+                        Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.Gray)
+                    }
+                }
                 content()
             }
+        }
+    }
+}
+
+@Composable
+fun ServerListItem(
+    ip: String,
+    onClick: () -> Unit
+) {
+    Surface(
+        onClick = onClick,
+        color = Color.White.copy(alpha = 0.05f),
+        shape = RoundedCornerShape(12.dp),
+        border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.3f)),
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Icon(Icons.Default.Settings, contentDescription = null, tint = Color.Cyan, modifier = Modifier.size(20.dp))
+                Column {
+                    Text("Server Found", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                    Text(ip, color = Color.Gray, style = MaterialTheme.typography.labelSmall)
+                }
+            }
+            Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Cyan.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
         }
     }
 }

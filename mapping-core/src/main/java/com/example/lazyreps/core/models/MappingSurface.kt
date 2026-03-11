@@ -2,7 +2,7 @@ package com.example.lazyreps.core.models
 
 import java.util.UUID
 
-enum class SourceType { VIDEO, SHADER, IMAGE }
+enum class SourceType { VIDEO, SHADER, IMAGE, MJPEG_CAMERA }
 
 /**
  * Representa una superficie de proyección con 4 esquinas deformables.
@@ -16,6 +16,7 @@ data class MappingSurface(
     val shaderId: String? = null,
     val imagePath: String? = null, // Phase 2: Image support
     val shaderParameters: Map<String, Float> = emptyMap(),
+    val shaderText: String? = null, // [v1.9.0]
     // Puntos del polígono principal
     val corners: FloatArray = floatArrayOf(
         0.4f, 0.4f, // Superior-Izquierda
@@ -53,7 +54,9 @@ data class MappingSurface(
     // - fxSlot: Applied last (top layer)
     val backgroundsSlot: EffectSlot? = null,
     val visualsSlot: EffectSlot? = null,
-    val fxSlot: EffectSlot? = null
+    val fxSlot: EffectSlot? = null,
+    val isNegative: Boolean = false, // [v2.1] Mask/Hole role
+    val mediaParams: Map<String, String> = emptyMap() // [v5.8] Camera/Stream params
 ) {
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
@@ -76,6 +79,8 @@ data class MappingSurface(
         if (backgroundsSlot != other.backgroundsSlot) return false
         if (visualsSlot != other.visualsSlot) return false
         if (fxSlot != other.fxSlot) return false
+        if (isNegative != other.isNegative) return false
+        if (mediaParams != other.mediaParams) return false
         
         // Deep check for holes
         if (holes.size != other.holes.size) return false
@@ -106,6 +111,8 @@ data class MappingSurface(
         result = 31 * result + (backgroundsSlot?.hashCode() ?: 0)
         result = 31 * result + (visualsSlot?.hashCode() ?: 0)
         result = 31 * result + (fxSlot?.hashCode() ?: 0)
+        result = 31 * result + isNegative.hashCode()
+        result = 31 * result + mediaParams.hashCode()
         // Deep hash for holes
         holes.forEach { hole ->
             result = 31 * result + hole.contentHashCode()

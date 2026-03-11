@@ -9,6 +9,7 @@ import org.json.JSONObject
  */
 sealed class MappingCommand {
     abstract fun toJSONObject(): JSONObject
+    abstract fun invert(state: MappingState): MappingCommand?
 
     data class UpdateVertex(
         val surfaceId: String,
@@ -23,6 +24,17 @@ sealed class MappingCommand {
             put("x", x.toDouble())
             put("y", y.toDouble())
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            if (vertexIndex * 2 + 1 >= surface.corners.size) return null
+            return UpdateVertex(
+                surfaceId,
+                vertexIndex,
+                surface.corners[vertexIndex * 2],
+                surface.corners[vertexIndex * 2 + 1]
+            )
+        }
     }
 
     data class UpdateAllCorners(
@@ -35,6 +47,11 @@ sealed class MappingCommand {
             val array = JSONArray()
             corners.forEach { array.put(it.toDouble()) }
             put("corners", array)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return UpdateAllCorners(surfaceId, surface.corners.copyOf())
         }
 
         override fun equals(other: Any?): Boolean {
@@ -58,6 +75,19 @@ sealed class MappingCommand {
             put("type", "TOGGLE_BLACK")
             put("surfaceId", surfaceId)
         }
+
+        override fun invert(state: MappingState) = ToggleBlackMode(surfaceId)
+    }
+
+    data class ToggleNegativeMode(
+        val surfaceId: String
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "TOGGLE_NEGATIVE")
+            put("surfaceId", surfaceId)
+        }
+
+        override fun invert(state: MappingState) = ToggleNegativeMode(surfaceId)
     }
 
     data class MoveLayer(
@@ -69,6 +99,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("direction", direction)
         }
+
+        override fun invert(state: MappingState) = MoveLayer(
+            surfaceId,
+            if (direction == "UP") "DOWN" else "UP"
+        )
     }
 
     data class SetOutputMode(
@@ -78,6 +113,8 @@ sealed class MappingCommand {
             put("type", "SET_OUTPUT_MODE")
             put("mode", mode)
         }
+
+        override fun invert(state: MappingState) = SetOutputMode(state.outputMode)
     }
 
     data class AddSurface(
@@ -93,6 +130,12 @@ sealed class MappingCommand {
             put("screenHeight", screenHeight.toDouble())
             if (id != null) put("id", id)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            // Note: AddSurface usually results in the server/VM creating an ID.
+            // If the command already has an ID (client-generated), we can use it.
+            return id?.let { RemoveSurface(it) }
+        }
     }
 
     data class SetVideoPath(
@@ -104,6 +147,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("remotePath", remotePath)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return surface.videoPath?.let { SetVideoPath(surfaceId, it) }
+        }
     }
 
     data class ToggleFullScreen(
@@ -113,6 +161,8 @@ sealed class MappingCommand {
             put("type", "TOGGLE_FULL_SCREEN")
             put("isEnabled", isEnabled)
         }
+
+        override fun invert(state: MappingState) = ToggleFullScreen(state.isFullScreen)
     }
 
     data class ClearAll(
@@ -121,6 +171,8 @@ sealed class MappingCommand {
         override fun toJSONObject() = JSONObject().apply {
             put("type", "CLEAR_ALL")
         }
+
+        override fun invert(state: MappingState): MappingCommand? = null // Too complex to undo for now
     }
 
     data class RemoveSurface(
@@ -129,6 +181,11 @@ sealed class MappingCommand {
         override fun toJSONObject() = JSONObject().apply {
             put("type", "REMOVE_SURFACE")
             put("surfaceId", surfaceId)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return RestoreSurface(surface)
         }
     }
 
@@ -141,6 +198,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("scaleFactor", scaleFactor.toDouble())
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return UpdateAllCorners(surfaceId, surface.corners.copyOf())
+        }
     }
 
     data class SetSourceType(
@@ -152,6 +214,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("sourceType", sourceType.name)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return SetSourceType(surfaceId, surface.sourceType)
+        }
     }
 
     data class SetShaderId(
@@ -162,6 +229,11 @@ sealed class MappingCommand {
             put("type", "SET_SHADER_ID")
             put("surfaceId", surfaceId)
             put("shaderId", shaderId)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return surface.shaderId?.let { SetShaderId(surfaceId, it) }
         }
     }
 
@@ -176,6 +248,47 @@ sealed class MappingCommand {
             put("paramName", paramName)
             put("value", value.toDouble())
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            val oldValue = surface.shaderParameters[paramName] ?: 0f
+            return UpdateShaderParameter(surfaceId, paramName, oldValue)
+        }
+    }
+
+    data class SetShaderText(
+        val surfaceId: String,
+        val text: String
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "SET_SHADER_TEXT")
+            put("surfaceId", surfaceId)
+            put("text", text)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return surface.shaderText?.let { SetShaderText(surfaceId, it) }
+        }
+    }
+
+    data class UpdateMediaParam(
+        val surfaceId: String,
+        val key: String,
+        val value: String
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "UPDATE_MEDIA_PARAM")
+            put("surfaceId", surfaceId)
+            put("key", key)
+            put("value", value)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            val oldValue = surface.mediaParams[key] ?: ""
+            return UpdateMediaParam(surfaceId, key, oldValue)
+        }
     }
 
     // Phase 1: Foundation Features Commands
@@ -188,6 +301,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("opacity", opacity.toDouble())
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return SetOpacity(surfaceId, surface.opacity)
+        }
     }
 
     data class ToggleVisibility(
@@ -197,6 +315,8 @@ sealed class MappingCommand {
             put("type", "TOGGLE_VISIBILITY")
             put("surfaceId", surfaceId)
         }
+
+        override fun invert(state: MappingState) = ToggleVisibility(surfaceId)
     }
 
     data class SetLayerName(
@@ -208,6 +328,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("name", name)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return SetLayerName(surfaceId, surface.name)
+        }
     }
 
     data class RotateSurface(
@@ -218,6 +343,11 @@ sealed class MappingCommand {
             put("type", "ROTATE_SURFACE")
             put("surfaceId", surfaceId)
             put("rotation", rotation.toDouble())
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return RotateSurface(surfaceId, surface.rotation)
         }
     }
 
@@ -232,6 +362,11 @@ sealed class MappingCommand {
             put("horizontal", horizontal)
             put("vertical", vertical)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return FlipSurface(surfaceId, surface.flipHorizontal, surface.flipVertical)
+        }
     }
 
     // Phase 2: Content & Effects Commands
@@ -244,6 +379,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("isPlaying", isPlaying)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return SetLayerPlayState(surfaceId, surface.isPlaying)
+        }
     }
 
     data class SetPlaybackSpeed(
@@ -255,6 +395,11 @@ sealed class MappingCommand {
             put("surfaceId", surfaceId)
             put("speed", speed.toDouble())
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return SetPlaybackSpeed(surfaceId, surface.playbackSpeed)
+        }
     }
 
     data class SetImagePath(
@@ -265,6 +410,11 @@ sealed class MappingCommand {
             put("type", "SET_IMAGE_PATH")
             put("surfaceId", surfaceId)
             put("imagePath", imagePath)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return surface.imagePath?.let { SetImagePath(surfaceId, it) }
         }
     }
 
@@ -283,8 +433,23 @@ sealed class MappingCommand {
                 val paramsObj = JSONObject()
                 clip.shaderParameters.forEach { (k, v) -> paramsObj.put(k, v.toDouble()) }
                 put("shaderParameters", paramsObj)
+                if (clip.shaderText != null) put("shaderText", clip.shaderText)
+                
+                val mpObj = JSONObject()
+                clip.mediaParams.forEach { (k, v) -> mpObj.put(k, v) }
+                put("mediaParams", mpObj)
             }
             put("clip", cObj)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            // Reverting a clip trigger should probably restore the surface state 
+            // before the trigger. For now, since TriggerClip updates slots, 
+            // undoing it is best handled by RestoreSurface or capturing the 
+            // specific slot state. Given simplicity, we'll return null for complex 
+            // state changes if not easily reversible via a single command.
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return RestoreSurface(surface)
         }
     }
 
@@ -295,6 +460,8 @@ sealed class MappingCommand {
             put("type", "SET_ACTIVE_DECK")
             put("deckIndex", deckIndex)
         }
+
+        override fun invert(state: MappingState) = SetActiveDeck(state.activeDeckIndex)
     }
 
     data class SetTargetFPS(
@@ -304,6 +471,8 @@ sealed class MappingCommand {
             put("type", "SET_TARGET_FPS")
             put("fps", fps)
         }
+
+        override fun invert(state: MappingState) = SetTargetFPS(state.targetFPS)
     }
 
     data class SetGlobalBPM(
@@ -313,6 +482,65 @@ sealed class MappingCommand {
             put("type", "SET_GLOBAL_BPM")
             put("bpm", bpm.toDouble())
         }
+
+        override fun invert(state: MappingState) = SetGlobalBPM(state.globalBPM)
+    }
+
+    data class RestoreSurface(
+        val surface: MappingSurface
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "RESTORE_SURFACE")
+            // Reusing MappingState serialization logic for the surface
+            val sObj = JSONObject().apply {
+                put("id", surface.id)
+                put("videoPath", surface.videoPath)
+                put("sourceType", surface.sourceType.name)
+                put("shaderId", surface.shaderId)
+                if (surface.shaderText != null) put("shaderText", surface.shaderText)
+                
+                val paramsObj = JSONObject()
+                surface.shaderParameters.forEach { (name, value) ->
+                    paramsObj.put(name, value.toDouble())
+                }
+                put("shaderParameters", paramsObj)
+                
+                put("isBlack", surface.isBlack)
+                put("name", surface.name)
+                put("opacity", surface.opacity.toDouble())
+                put("isVisible", surface.isVisible)
+                put("isNegative", surface.isNegative)
+                put("rotation", surface.rotation.toDouble())
+                put("flipHorizontal", surface.flipHorizontal)
+                put("flipVertical", surface.flipVertical)
+                put("isPlaying", surface.isPlaying)
+                put("playbackSpeed", surface.playbackSpeed.toDouble())
+                put("imagePath", surface.imagePath)
+                
+                val mediaParamsObj = JSONObject()
+                surface.mediaParams.forEach { (k, v) -> mediaParamsObj.put(k, v) }
+                put("mediaParams", mediaParamsObj)
+                
+                val cornersArray = JSONArray()
+                surface.corners.forEach { cornersArray.put(it.toDouble()) }
+                put("corners", cornersArray)
+                
+                val texArray = JSONArray()
+                surface.texCoords.forEach { texArray.put(it.toDouble()) }
+                put("texCoords", texArray)
+                
+                val holesArray = JSONArray()
+                surface.holes.forEach { hole ->
+                    val hArray = JSONArray()
+                    hole.forEach { hArray.put(it.toDouble()) }
+                    holesArray.put(hArray)
+                }
+                put("holes", holesArray)
+            }
+            put("surface", sObj)
+        }
+
+        override fun invert(state: MappingState) = RemoveSurface(surface.id)
     }
 
     companion object {
@@ -327,6 +555,7 @@ sealed class MappingCommand {
                         obj.getDouble("y").toFloat()
                     )
                     "TOGGLE_BLACK" -> ToggleBlackMode(obj.getString("surfaceId"))
+                    "TOGGLE_NEGATIVE" -> ToggleNegativeMode(obj.getString("surfaceId"))
                     "MOVE_LAYER" -> MoveLayer(
                         obj.getString("surfaceId"),
                         obj.getString("direction")
@@ -366,6 +595,10 @@ sealed class MappingCommand {
                         obj.getString("surfaceId"),
                         obj.getString("paramName"),
                         obj.getDouble("value").toFloat()
+                    )
+                    "SET_SHADER_TEXT" -> SetShaderText(
+                        obj.getString("surfaceId"),
+                        obj.getString("text")
                     )
 
                     // Phase 1: Foundation Features
@@ -415,13 +648,87 @@ sealed class MappingCommand {
                                 name = cObj.getString("name"),
                                 sourceType = SourceType.valueOf(cObj.getString("sourceType")),
                                 path = cObj.optString("path", null),
-                                shaderParameters = cParams
+                                shaderParameters = cParams,
+                                shaderText = cObj.optString("shaderText", null),
+                                mediaParams = mutableMapOf<String, String>().apply {
+                                    if (cObj.has("mediaParams")) {
+                                        val mp = cObj.getJSONObject("mediaParams")
+                                        mp.keys().forEach { k -> put(k, mp.getString(k)) }
+                                    }
+                                }
                             )
                         )
                     }
+                    "UPDATE_MEDIA_PARAM" -> UpdateMediaParam(
+                        obj.getString("surfaceId"),
+                        obj.getString("key"),
+                        obj.getString("value")
+                    )
                     "SET_ACTIVE_DECK" -> SetActiveDeck(obj.getInt("deckIndex"))
                     "SET_TARGET_FPS" -> SetTargetFPS(obj.getInt("fps"))
                     "SET_GLOBAL_BPM" -> SetGlobalBPM(obj.getDouble("bpm").toFloat())
+                    
+                    "RESTORE_SURFACE" -> {
+                        val sObj = obj.getJSONObject("surface")
+                        // Logic same as in MappingState.fromJSON for a single surface
+                        val id = sObj.getString("id")
+                        val videoPath = sObj.optString("videoPath", null).let { if (it == "null" || it.isNullOrEmpty()) null else it }
+                        val sourceType = SourceType.valueOf(sObj.optString("sourceType", SourceType.VIDEO.name))
+                        val shaderId = sObj.optString("shaderId", null)
+                        val shaderText = sObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it }
+                        
+                        val params = mutableMapOf<String, Float>()
+                        if (sObj.has("shaderParameters")) {
+                            val pObj = sObj.getJSONObject("shaderParameters")
+                            pObj.keys().forEach { k -> params[k] = pObj.getDouble(k).toFloat() }
+                        }
+                        
+                        val cornersArr = sObj.getJSONArray("corners")
+                        val corners = FloatArray(cornersArr.length()) { cornersArr.getDouble(it).toFloat() }
+                        
+                        val texArr = sObj.getJSONArray("texCoords")
+                        val texCoords = FloatArray(texArr.length()) { texArr.getDouble(it).toFloat() }
+
+                        val holes = mutableListOf<FloatArray>()
+                        if (sObj.has("holes")) {
+                            val hArr = sObj.getJSONArray("holes")
+                            for (hIdx in 0 until hArr.length()) {
+                                val innerArr = hArr.getJSONArray(hIdx)
+                                val hole = FloatArray(innerArr.length()) { innerArr.getDouble(it).toFloat() }
+                                holes.add(hole)
+                            }
+                        }
+
+                        val mediaParams = mutableMapOf<String, String>()
+                        if (sObj.has("mediaParams")) {
+                            val mpObj = sObj.getJSONObject("mediaParams")
+                            mpObj.keys().forEach { k -> mediaParams[k] = mpObj.getString(k) }
+                        }
+
+                        RestoreSurface(MappingSurface(
+                            id = id,
+                            videoPath = videoPath,
+                            sourceType = sourceType,
+                            shaderId = shaderId,
+                            shaderText = shaderText,
+                            shaderParameters = params,
+                            isBlack = sObj.optBoolean("isBlack", false),
+                            name = sObj.optString("name", "Restored"),
+                            opacity = sObj.optDouble("opacity", 1.0).toFloat(),
+                            isVisible = sObj.optBoolean("isVisible", true),
+                            rotation = sObj.optDouble("rotation", 0.0).toFloat(),
+                            flipHorizontal = sObj.optBoolean("flipHorizontal", false),
+                            flipVertical = sObj.optBoolean("flipVertical", false),
+                            isNegative = sObj.optBoolean("isNegative", false),
+                            isPlaying = sObj.optBoolean("isPlaying", true),
+                            playbackSpeed = sObj.optDouble("playbackSpeed", 1.0).toFloat(),
+                            imagePath = sObj.optString("imagePath", null).let { if (it == "null" || it.isNullOrEmpty()) null else it },
+                            corners = corners,
+                            texCoords = texCoords,
+                            mediaParams = mediaParams,
+                            holes = holes
+                        ))
+                    }
 
                     "SET_PLAY_STATE" -> SetPlayState(obj.getBoolean("isPlaying"))
                     "CLIENT_HELLO" -> ClientHello(
@@ -432,6 +739,16 @@ sealed class MappingCommand {
                     "SERVER_HELLO" -> ServerHello(
                         obj.getInt("versionCode"),
                         obj.optString("versionName", "1.0")
+                    )
+                    "SET_MEDIA_SOURCE" -> SetMediaSource(
+                        obj.getString("surfaceId"),
+                        SourceType.valueOf(obj.getString("sourceType")),
+                        obj.getString("url"),
+                        obj.optInt("fpsLimit", 15),
+                        obj.optString("targetRes", "640x360"),
+                        obj.optString("fxPreset", "PASSTHROUGH"),
+                        obj.optDouble("fxIntensity", 1.0).toFloat(),
+                        obj.optString("preLook", "NONE")
                     )
                     else -> null
                 }
@@ -448,6 +765,13 @@ sealed class MappingCommand {
             put("type", "SET_PLAY_STATE")
             put("isPlaying", isPlaying)
         }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            // This is a global state, but it doesn't have a direct field in MappingState 
+            // that represents the 'global play state' until sync. 
+            // For now, let's return null or a toggle if we find where it is stored.
+            return null 
+        }
     }
 
     data class ClientHello(
@@ -461,6 +785,8 @@ sealed class MappingCommand {
             put("versionName", versionName)
             put("deviceId", deviceId)
         }
+
+        override fun invert(state: MappingState) = null
     }
 
     data class ServerHello(
@@ -471,6 +797,36 @@ sealed class MappingCommand {
             put("type", "SERVER_HELLO")
             put("versionCode", versionCode)
             put("versionName", versionName)
+        }
+
+        override fun invert(state: MappingState) = null
+    }
+
+    data class SetMediaSource(
+        val surfaceId: String,
+        val type: SourceType,
+        val url: String,
+        val fpsLimit: Int = 15, // Default 15
+        val targetRes: String = "640x360", // Default 640x360
+        val fxPreset: String = "PASSTHROUGH", // Default Passthrough
+        val fxIntensity: Float = 1.0f,
+        val preLook: String = "NONE" // Default None
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "SET_MEDIA_SOURCE")
+            put("surfaceId", surfaceId)
+            put("sourceType", type.name)
+            put("url", url)
+            put("fpsLimit", fpsLimit)
+            put("targetRes", targetRes)
+            put("fxPreset", fxPreset)
+            put("fxIntensity", fxIntensity.toDouble())
+            put("preLook", preLook)
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val surface = state.surfaces.find { it.id == surfaceId } ?: return null
+            return RestoreSurface(surface)
         }
     }
 }

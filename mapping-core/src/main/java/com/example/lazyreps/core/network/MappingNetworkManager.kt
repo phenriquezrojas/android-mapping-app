@@ -21,6 +21,8 @@ interface NetworkCallback {
     fun onClientDisconnected(address: String)
     fun onVideoUploaded(filename: String, file: File)
     fun onError(message: String)
+    // [Phase 5.8] Extensibility for App-level handling (e.g. Camera Streaming)
+    fun onHttpRequest(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response? = null
 }
 
 class MappingNetworkManager(
@@ -28,7 +30,7 @@ class MappingNetworkManager(
 ) {
     private var server: MappingWebSocketServer? = null
     private var client: MappingWebSocketClient? = null
-    private var httpServer: VideoUploadServer? = null
+    private var httpServer: MappingHttpServer? = null
     private val wsPort = 8080
     private val httpPort = 8081
 
@@ -39,9 +41,10 @@ class MappingNetworkManager(
         try {
             server = MappingWebSocketServer(InetSocketAddress(wsPort), callback).apply {
                 isReuseAddr = true
+                connectionLostTimeout = 15 // Check for lost connections every 15s
                 start()
             }
-            httpServer = VideoUploadServer(httpPort, storageDir, serverVersion, callback).apply {
+            httpServer = MappingHttpServer(httpPort, storageDir, serverVersion, callback).apply {
                 start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             }
             println("Server started on port $wsPort (WS) and $httpPort (HTTP)")
@@ -56,14 +59,19 @@ class MappingNetworkManager(
 
     // --- Client Mode ---
 
-    fun connectClient(serverIp: String) {
+    fun connectClient(serverIp: String, storageDir: File, clientVersion: String) {
         stopAll()
         try {
             val uri = URI("ws://$serverIp:$wsPort")
             client = MappingWebSocketClient(uri, callback).apply {
+                connectionLostTimeout = 15 // Check for lost connections every 15s
                 connect()
             }
-            println("Client connecting to $uri")
+            // [Phase 5] Client also starts HTTP server to serve files
+            httpServer = MappingHttpServer(httpPort, storageDir, clientVersion, callback).apply {
+                start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
+            }
+            println("Client connecting to $uri. HTTP Server started on $httpPort")
         } catch (e: Exception) {
             callback.onError("Failed to connect client: ${e.message}")
         }
@@ -193,7 +201,7 @@ class MappingNetworkManager(
         }
     }
     
-    private class VideoUploadServer(
+    private class MappingHttpServer(
         port: Int,
         private val storageDir: File,
         private val serverVersion: String,
@@ -202,11 +210,33 @@ class MappingNetworkManager(
 
         override fun serve(session: IHTTPSession?): Response {
             val uri = session?.uri ?: ""
-            println("VideoUploadServer Request: ${session?.method} $uri")
+            // println("MappingHttpServer Request: ${session?.method} $uri")
+
+            // [Phase 5.8] Allow app-level override (e.g. for /live.mjpg)
+            val customResponse = cb.onHttpRequest(session!!)
+            if (customResponse != null) return customResponse
             
-            if (session?.method == Method.GET && (uri == "/info" || uri == "/version")) {
-                val json = "{\"status\":\"ok\",\"version\":\"$serverVersion\",\"type\":\"MappingServer\"}"
-                return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+            if (session?.method == Method.GET) {
+                if (uri == "/info" || uri == "/version") {
+                    val json = "{\"status\":\"ok\",\"version\":\"$serverVersion\",\"type\":\"MappingNode\"}"
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                }
+                
+                // [Phase 5] Serve Video Files
+                // URI format: /video.mp4 or /subdir/video.mp4
+                // Security: Prevent accessing files outside storageDir
+                if (uri.endsWith(".mp4") || uri.endsWith(".mkv") || uri.endsWith(".jpg") || uri.endsWith(".png")) {
+                    val filePath = uri.substring(1) // Remove leading /
+                    if (!filePath.contains("..")) { // Basic path traversal check
+                        val file = File(storageDir, filePath)
+                        if (file.exists()) {
+                            // NanoHTTPD's serveFile handles Range headers for streaming
+                            val mime = if (uri.endsWith(".mp4")) "video/mp4" else "application/octet-stream"
+                            return newFixedLengthResponse(Response.Status.OK, mime, java.io.FileInputStream(file), file.length())
+                        }
+                    }
+                    return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File not found")
+                }
             }
 
             if (session?.method == Method.POST) {
@@ -223,6 +253,7 @@ class MappingNetworkManager(
                             val tempFile = File(tempFilePath)
                             val targetFile = File(storageDir, originalName)
                             tempFile.copyTo(targetFile, overwrite = true)
+                            // Clean up temp file? NanoHTTPD usually handles it but we moved it.
                             cb.onVideoUploaded(originalName, targetFile)
                             return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Upload success")
                         }
@@ -233,8 +264,7 @@ class MappingNetworkManager(
                      try {
                         val files = HashMap<String, String>()
                         session.parseBody(files)
-                        // APK upload logic
-                        val tempFilePath = files["update"] ?: files["file"] ?: files["apk"] // Check multiple keys
+                        val tempFilePath = files["update"] ?: files["file"] ?: files["apk"]
                         
                         if (tempFilePath != null) {
                             val tempFile = File(tempFilePath)

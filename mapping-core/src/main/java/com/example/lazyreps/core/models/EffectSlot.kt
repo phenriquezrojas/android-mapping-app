@@ -8,7 +8,8 @@ data class EffectSlot(
     val sourceType: SourceType,
     val content: String,  // shaderId, videoPath, or imagePath depending on sourceType
     val shaderParameters: Map<String, Float> = emptyMap(),
-    val opacity: Float = 1.0f
+    val opacity: Float = 1.0f,
+    val shaderText: String? = null // [v1.9.0]
 ) {
     companion object {
         fun fromShader(shaderId: String, parameters: Map<String, Float> = emptyMap()): EffectSlot {
@@ -44,4 +45,24 @@ enum class EffectSlotType {
     BACKGROUNDS,  // Applied first
     VISUALS,      // Applied second
     FX            // Applied last
+}
+
+/**
+ * Helper to update a shader parameter only if the slot is a SHADER.
+ */
+fun EffectSlot.updateParamIfShader(paramName: String, value: Float): EffectSlot {
+    return if (this.sourceType == SourceType.SHADER) {
+        val newParams = this.shaderParameters.toMutableMap()
+        newParams[paramName] = value
+        this.copy(shaderParameters = newParams)
+    } else this
+}
+
+/**
+ * Helper to update a shader text only if the slot is a SHADER.
+ */
+fun EffectSlot.updateTextIfShader(text: String): EffectSlot {
+    return if (this.sourceType == SourceType.SHADER) {
+        this.copy(shaderText = text)
+    } else this
 }

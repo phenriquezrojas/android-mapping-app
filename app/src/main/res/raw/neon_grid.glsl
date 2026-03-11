@@ -8,7 +8,8 @@ uniform float u_speed;
 uniform float u_glow;
 
 void main() {
-    vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / u_resolution.y;
+    float resY = max(u_resolution.y, 1.0);
+    vec2 uv = (gl_FragCoord.xy - 0.5 * u_resolution.xy) / resY;
     float t = u_time * u_speed;
     
     // Rotate grid
@@ -24,7 +25,7 @@ void main() {
     
     // Add pulsing center
     float dist = length(uv);
-    col += vec3(1.0, 0.2, 0.5) * (0.02 / dist) * u_glow;
+    col += vec3(1.0, 0.2, 0.5) * (0.02 / (dist + 0.001)) * u_glow;
     
     gl_FragColor = vec4(col, u_opacity);
 }

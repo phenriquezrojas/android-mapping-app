@@ -8,6 +8,25 @@ class MappingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         
+        // [v1.13.2] Early Transactional Recovery
+        // We do this synchronously in Application.onCreate to ensure bad states 
+        // are discarded BEFORE any ViewModel or Renderer starts.
+        try {
+            val crashFile = java.io.File(filesDir, "last_crash.txt")
+            if (crashFile.exists()) {
+                val prefs = getSharedPreferences("mapping_prefs", android.content.Context.MODE_PRIVATE)
+                val stableJson = prefs.getString("current_full_state_stable", null)
+                if (stableJson != null) {
+                    android.util.Log.w("MappingRecovery", "CRASH DETECTED. Early rollback to stable state.")
+                    prefs.edit().putString("current_full_state_json", stableJson).apply()
+                }
+                // Do not delete crashFile here, MappingViewModel will delete it 
+                // and show the UI notification later.
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("MappingRecovery", "Early recovery failed", e)
+        }
+
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             android.util.Log.e("MappingCrashCatch", "FATAL EXCEPTION in thread ${thread.name}", throwable)
