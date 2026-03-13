@@ -2792,16 +2792,10 @@ class MappingViewModel @Inject constructor(
                         EffectSlotType.FX -> surface.fxSlot
                     }
                     
-                    // [v1.9.0 FASE 2.7] Smart Toggle Logic:
-                    val isActiveSource = (effect?.sourceType == SourceType.VIDEO && surface.sourceType == SourceType.VIDEO) ||
-                                         (effect?.sourceType == SourceType.SHADER && surface.sourceType == SourceType.SHADER) ||
-                                         (effect?.sourceType == SourceType.MJPEG_CAMERA && surface.sourceType == SourceType.MJPEG_CAMERA) ||
-                                          effect?.sourceType == SourceType.IMAGE // Images don't have strict source type authority yet, assume true
-                                         
+                    // [v1.18.17] Universal Toggle: Content match is sufficient, regardless of global authority.
                     val shouldClear = effect != null && currentSlot != null && 
                                       currentSlot.sourceType == effect.sourceType && 
-                                      currentSlot.content == effect.content &&
-                                      isActiveSource
+                                      currentSlot.content == effect.content
                     
                     val newEffect = if (shouldClear) null else effect
                     

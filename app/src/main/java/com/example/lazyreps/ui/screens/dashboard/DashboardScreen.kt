@@ -660,20 +660,19 @@ fun ClipSlot(
     tint: Color,
     activeDeckName: String
 ) {
-    // [v1.10.9] Improved Isolation: Only highlight if playing in the SPECIFIC slot of the current tab.
-    val isPlaying = clip != null && (
-        surface.sourceType == clip.sourceType && run {
-            val currentSlot = when (activeDeckName) {
-                "Backgrounds" -> surface.backgroundsSlot
-                "Visuals 1" -> surface.visualsSlot
-                "FX 1" -> surface.fxSlot
-                else -> null
-            }
-
-            // A clip is active ONLY if it matches the current slot of the active tab
-            currentSlot != null && currentSlot.sourceType == clip.sourceType && currentSlot.content == clip.path
+    // [v1.18.17] Robust Sync: Only highlight if playing in the SPECIFIC slot of the current tab.
+    // We ignore surface.sourceType because multiple layers can now coexist.
+    val isPlaying = clip != null && run {
+        val currentSlot = when (activeDeckName) {
+            "Backgrounds" -> surface.backgroundsSlot
+            "Visuals 1" -> surface.visualsSlot
+            "FX 1" -> surface.fxSlot
+            else -> null
         }
-    )
+
+        // A clip is active ONLY if it matches the current slot of the active tab
+        currentSlot != null && currentSlot.sourceType == clip.sourceType && currentSlot.content == clip.path
+    }
 
     Box(
         modifier = Modifier
