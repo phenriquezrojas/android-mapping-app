@@ -2405,7 +2405,7 @@ class MappingViewModel @Inject constructor(
         }
 
         // Default path as requested by USER
-        val effectivePath = path ?: _uiState.value.remoteCurrentPath ?: "/storage/emulated/0/Movies"
+        val effectivePath = path ?: _uiState.value.remoteCurrentPath ?: "/storage/emulated/0"
         
         _uiState.update { it.copy(isScanningRemote = true, lastScanError = null, remoteCurrentPath = effectivePath) }
         

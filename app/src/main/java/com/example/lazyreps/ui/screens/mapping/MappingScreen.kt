@@ -872,6 +872,7 @@ fun MappingScreen(
                 remoteLibrary = uiState.remoteLibrary,
                 remoteCurrentPath = uiState.remoteCurrentPath,
                 remoteThumbnails = uiState.remoteThumbnails,
+                filterType = filePickerMode, // [v1.18.23] Pass the intent mode
                 isScanningRemote = uiState.isScanningRemote,
                 lastScanError = uiState.lastScanError,
                 initialIsRemoteMode = uiState.serverIp != null && uiState.serverIp != "Local Server" && uiState.serverIp != "Searching...",

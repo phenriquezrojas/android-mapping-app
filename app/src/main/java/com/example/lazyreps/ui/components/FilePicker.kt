@@ -130,8 +130,8 @@ fun FilePicker(
                     },
                     onToggleMode = { isRemoteMode = !isRemoteMode },
                     canGoBack = if (isRemoteMode) {
-                        // Permite volver atrás si no estamos en la raíz simulada o hay path
-                        remoteCurrentPath != null && remoteCurrentPath != "/storage/emulated/0/Movies"
+                        // Permite volver atrás si no estamos en la raíz
+                        remoteCurrentPath != null && remoteCurrentPath != "/storage/emulated/0"
                     } else {
                         currentDirectory.absolutePath != rootDir.absolutePath
                     },
@@ -155,6 +155,7 @@ fun FilePicker(
                             RemoteContent(
                                 library = remoteLibrary,
                                 thumbnails = remoteThumbnails,
+                                filterType = filterType, // [v1.18.23] Apply filtering intent
                                 isLoading = isScanningRemote,
                                 error = lastScanError,
                                 neonColor = neonPurple,
@@ -307,23 +308,39 @@ fun LocalContent(
 fun RemoteContent(
     library: List<com.example.lazyreps.ui.screens.mapping.RemoteVideo>,
     thumbnails: Map<String, Bitmap>,
+    filterType: com.example.lazyreps.core.models.SourceType,
     isLoading: Boolean,
     error: String?,
     neonColor: Color,
     onSelect: (com.example.lazyreps.ui.screens.mapping.RemoteVideo) -> Unit,
     onRequestThumbnail: (String) -> Unit
 ) {
+    val filteredLibrary = remember(library, filterType) {
+        library.filter { video ->
+            if (video.isDir) true
+            else {
+                val name = video.name.lowercase()
+                if (filterType == com.example.lazyreps.core.models.SourceType.IMAGE) {
+                    name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".png") || name.endsWith(".bmp")
+                } else {
+                    name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".avi") || name.endsWith(".mov")
+                }
+            }
+        }.sortedWith(compareBy({ !it.isDir }, { it.name.lowercase() }))
+    }
+
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         when {
             isLoading -> ScanningRadar(neonColor)
             error != null -> ErrorStateView(error, neonColor)
-            library.isEmpty() -> EmptyStateView(Icons.Default.CloudOff, "No se encontraron items", neonColor)
+            filteredLibrary.isEmpty() -> EmptyStateView(Icons.Default.CloudOff, "No se encontraron items", neonColor)
             else -> {
                 LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(library, key = { it.path }) { video ->
+                    items(filteredLibrary, key = { it.path }) { video ->
                         RemoteCard(
                             video = video,
                             thumbnail = thumbnails[video.path],
+                            filterType = filterType,
                             neonColor = neonColor,
                             onSelect = onSelect,
                             onRequestThumbnail = { onRequestThumbnail(video.path) }
@@ -423,6 +440,7 @@ fun FileCard(
 fun RemoteCard(
     video: com.example.lazyreps.ui.screens.mapping.RemoteVideo, 
     thumbnail: Bitmap?,
+    filterType: com.example.lazyreps.core.models.SourceType,
     neonColor: Color, 
     onSelect: (com.example.lazyreps.ui.screens.mapping.RemoteVideo) -> Unit,
     onRequestThumbnail: () -> Unit
@@ -454,8 +472,10 @@ fun RemoteCard(
                     Icon(Icons.Default.Folder, null, tint = Color(0xFFFFC107), modifier = Modifier.size(30.dp))
                 } else if (thumbnail != null) {
                     Image(bitmap = thumbnail.asImageBitmap(), null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                } else if (filterType == com.example.lazyreps.core.models.SourceType.IMAGE) {
+                    Icon(Icons.Default.Image, null, tint = neonColor.copy(0.5f))
                 } else {
-                    Icon(Icons.Default.CloudQueue, null, tint = neonColor.copy(0.5f))
+                    Icon(Icons.Default.Movie, null, tint = neonColor.copy(0.5f))
                 }
             }
             
@@ -469,7 +489,11 @@ fun RemoteCard(
                 }
             }
             if (!video.isDir) {
-                Icon(Icons.Default.PlayCircle, null, tint = neonColor)
+                Icon(
+                    if (filterType == com.example.lazyreps.core.models.SourceType.IMAGE) Icons.Default.Image else Icons.Default.PlayCircle, 
+                    null, 
+                    tint = neonColor
+                )
             } else {
                 Icon(Icons.Default.ChevronRight, null, tint = Color.White.copy(0.2f))
             }
