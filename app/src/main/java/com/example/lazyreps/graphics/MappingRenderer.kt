@@ -7,6 +7,7 @@ import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.view.Surface
+import java.io.File
 import com.example.lazyreps.R
 import com.example.lazyreps.core.models.MappingSurface
 import com.example.lazyreps.core.models.MappingState
@@ -1151,8 +1152,28 @@ private fun drawStencilShape(surface: MappingSurface) {
     }
 
     private fun loadImageTexture(path: String) {
+        if (path.isEmpty()) return
         try {
-            val bitmap = android.graphics.BitmapFactory.decodeFile(path) ?: return
+            // [v1.18.20] Path Resolution: Stripping 'file:' to prevent double-prefixing
+            val cleanPath = path.removePrefix("file://").removePrefix("file:")
+            
+            val file = if (cleanPath.startsWith("/") || path.contains("file:")) {
+                File(cleanPath)
+            } else {
+                val storageDir = context.getExternalFilesDir(null) ?: context.filesDir
+                File(storageDir, cleanPath)
+            }
+
+            if (!file.exists()) {
+                Log.w("MappingRenderer", "Image file not found: ${file.absolutePath}")
+                return
+            }
+
+            val bitmap = android.graphics.BitmapFactory.decodeFile(file.absolutePath) ?: run {
+                Log.e("MappingRenderer", "Failed to decode bitmap: ${file.absolutePath}")
+                return
+            }
+
             val ids = IntArray(1)
             GLES20.glGenTextures(1, ids, 0)
             GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, ids[0])
@@ -1163,8 +1184,9 @@ private fun drawStencilShape(surface: MappingSurface) {
             android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
             bitmap.recycle()
             imageTextures[path] = ids[0]
+            Log.d("MappingRenderer", "Texture loaded successfully for: $path")
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e("MappingRenderer", "Error loading image texture: $path", e)
         }
     }
 

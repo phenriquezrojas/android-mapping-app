@@ -46,6 +46,11 @@ class MappingNetworkManager(
                 connectionLostTimeout = 15 // Check for lost connections every 15s
                 start()
             }
+            // [v1.18.19] Managed Subdirectory for Uploads
+            val uploadDir = File(storageDir, "uploads")
+            if (!uploadDir.exists()) uploadDir.mkdirs()
+            cleanupOldUploads(uploadDir)
+
             httpServer = MappingHttpServer(httpPort, storageDir, serverVersion, callback).apply {
                 start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             }
@@ -70,6 +75,11 @@ class MappingNetworkManager(
                 connect()
             }
             // [Phase 5] Client also starts HTTP server to serve files
+            // [v1.18.19] Use dedicated uploadDir
+            val uploadDir = File(storageDir, "uploads")
+            if (!uploadDir.exists()) uploadDir.mkdirs()
+            cleanupOldUploads(uploadDir)
+
             httpServer = MappingHttpServer(httpPort, storageDir, clientVersion, callback).apply {
                 start(NanoHTTPD.SOCKET_READ_TIMEOUT, false)
             }
@@ -109,6 +119,22 @@ class MappingNetworkManager(
         server = null
         client = null
         httpServer = null
+    }
+
+    private fun cleanupOldUploads(uploadDir: File) {
+        try {
+            val now = System.currentTimeMillis()
+            val cutoff = 24 * 60 * 60 * 1000 // 24 hours
+            val files = uploadDir.listFiles() ?: return
+            for (file in files) {
+                if (now - file.lastModified() > cutoff) {
+                    println("Cleaning up old remote asset: ${file.name}")
+                    file.delete()
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
     }
     
     fun uploadVideo(serverIp: String, file: File) {
@@ -274,12 +300,16 @@ class MappingNetworkManager(
                         session.parseBody(files)
                         
                         val parms = session.parms
-                        val tempFilePath = files["video"]
-                        val originalName = parms["filename"] ?: "uploaded_video_${System.currentTimeMillis()}.mp4"
+                        val tempFilePath = files["video"] ?: files["image"] ?: files["file"] ?: files["apk"]
+                        val originalName = parms["filename"] ?: "uploaded_asset_${System.currentTimeMillis()}"
                         
                         if (tempFilePath != null) {
                             val tempFile = File(tempFilePath)
-                            val targetFile = File(storageDir, originalName)
+                            // [v1.18.19] Force target to uploads/ subdirectory unless it's an APK
+                            val targetDir = if (originalName.endsWith(".apk")) storageDir else File(storageDir, "uploads")
+                            if (!targetDir.exists()) targetDir.mkdirs()
+
+                            val targetFile = File(targetDir, originalName)
                             tempFile.copyTo(targetFile, overwrite = true)
                             // Clean up temp file? NanoHTTPD usually handles it but we moved it.
                             cb.onVideoUploaded(originalName, targetFile)

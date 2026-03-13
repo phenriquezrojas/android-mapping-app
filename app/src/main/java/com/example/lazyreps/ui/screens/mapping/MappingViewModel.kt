@@ -1537,22 +1537,38 @@ class MappingViewModel @Inject constructor(
     }
 
     fun setImageForSurface(id: String, path: String, fromRemote: Boolean = false) {
+        val uri = try { Uri.parse(path) } catch (e: Exception) { Uri.EMPTY }
+        
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            dispatchCommand(MappingCommand.SetImagePath(id, path))
+            uploadAssetToServer(uri, "img_${System.currentTimeMillis()}_${uri.lastPathSegment ?: "image.jpg"}") { serverPath ->
+                dispatchCommand(MappingCommand.SetImagePath(id, serverPath))
+            }
             return
         }
 
-        _uiState.update { state ->
-            val updated = state.surfaces.map {
-                if (it.id == id) it.copy(
-                    imagePath = path,
-                    sourceType = SourceType.IMAGE
-                ) else it
+        viewModelScope.launch(Dispatchers.IO) {
+            val normalizedPath = normalizePath(path)
+            val finalPath = if (!fromRemote) {
+                // If local (standalone or server), ensure we have a physical file path for the Renderer
+                copyContentUriToLocal(uri)?.absolutePath ?: normalizedPath
+            } else {
+                normalizedPath
             }
-            state.copy(surfaces = updated)
+
+            withContext(Dispatchers.Main) {
+                _uiState.update { state ->
+                    val updated = state.surfaces.map {
+                        if (it.id == id) it.copy(
+                            imagePath = finalPath,
+                            sourceType = SourceType.IMAGE
+                        ) else it
+                    }
+                    state.copy(surfaces = updated)
+                }
+                syncRenderer()
+                saveCurrentState()
+            }
         }
-        syncRenderer()
-        saveCurrentState()
     }
 
     // [Phase 5.8.5] Camera Activation
@@ -2109,8 +2125,11 @@ class MappingViewModel @Inject constructor(
     @OptIn(UnstableApi::class)
     fun setVideoForSurface(id: String, uri: Uri, fromRemote: Boolean = false) {
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            // [Phase 5] Stream from Phone instead of Upload
-            streamLocalVideo(id, uri)
+            // [v1.18.19] Managed Push Model for Videos
+            uploadAssetToServer(uri, "vid_${System.currentTimeMillis()}_${uri.lastPathSegment ?: "video.mp4"}") { serverPath ->
+                dispatchCommand(MappingCommand.SetVideoPath(id, serverPath))
+                dispatchCommand(MappingCommand.SetSourceType(id, SourceType.VIDEO))
+            }
             return
         }
 
@@ -2140,13 +2159,15 @@ class MappingViewModel @Inject constructor(
                     }
                 }
                 
+                val normalizedPath = normalizePath(resolvedUri.toString())
+                
                 _uiState.update { state ->
                     val updatedSurfaces = state.surfaces.map {
                         if (it.id == id) {
                             // [v1.9.0 FASE 1] AUTORIDAD EXCLUSIVA: Video toma control
                             Log.d("MappingViewModel", "[AUTHORITY] Video taking control for $id")
                             it.copy(
-                                videoPath = resolvedUri.toString(),
+                                videoPath = normalizedPath,
                                 sourceType = SourceType.VIDEO // Explicit authority
                             )
                         } else {
@@ -2197,6 +2218,106 @@ class MappingViewModel @Inject constructor(
                 val msg = "Error setting video: ${t.message}"
                 Log.e("MappingViewModel", msg, t)
                 _uiState.update { it.copy(errorMessage = msg, isLoading = false) }
+            }
+        }
+    }
+
+    private fun normalizePath(path: String): String {
+        return path.removePrefix("file://").removePrefix("file:")
+    }
+
+    private fun copyContentUriToLocal(uri: Uri): File? {
+        if (uri.scheme != "content") return null
+        return try {
+            val uploadsDir = File(context.getExternalFilesDir(null) ?: context.filesDir, "uploads")
+            if (!uploadsDir.exists()) uploadsDir.mkdirs()
+            
+            val filename = "local_res_${System.currentTimeMillis()}_${uri.lastPathSegment ?: "file"}"
+            val destFile = File(uploadsDir, filename)
+            
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output ->
+                    input.copyTo(output)
+                }
+            }
+            destFile
+        } catch (e: Exception) {
+            Log.e("MappingViewModel", "Failed to copy content URI to local storage", e)
+            null
+        }
+    }
+
+    private fun uploadAssetToServer(uri: Uri, filename: String, onComplete: (String) -> Unit) {
+        val serverIp = _uiState.value.serverIp ?: return
+        
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _uiState.update { it.copy(isLoading = true, updateProgress = 0f) }
+                
+                // 1. Prepare Local File
+                val localFile = if (uri.scheme == "content") {
+                    copyContentUriToLocal(uri)
+                } else {
+                    File(uri.path ?: "")
+                } ?: throw Exception("Could not prepare local file")
+
+                val totalLength = localFile.length()
+                
+                // 2. Check if already exists (Simple name/size match)
+                // TODO: Optimization - implement metadata check via /info or /list
+                // For now, we push to ensure freshness.
+
+                // 3. Upload
+                val fileBody = localFile.asRequestBody(null) // Let server detect mime
+                val progressiveBody = object : RequestBody() {
+                    override fun contentType() = fileBody.contentType()
+                    override fun contentLength() = totalLength
+                    override fun writeTo(sink: okio.BufferedSink) {
+                        localFile.source().use { source ->
+                            var totalRead = 0L
+                            val buffer = okio.Buffer()
+                            while (true) {
+                                val r = source.read(buffer, 32768L)
+                                if (r == -1L) break
+                                sink.write(buffer, r)
+                                totalRead += r
+                                val progress = totalRead.toFloat() / totalLength
+                                _uiState.update { it.copy(updateProgress = progress) }
+                            }
+                        }
+                    }
+                }
+
+                val requestBody = MultipartBody.Builder()
+                    .setType(MultipartBody.FORM)
+                    .addFormDataPart("file", filename, progressiveBody) // Standard field
+                    .addFormDataPart("filename", filename)
+                    .build()
+
+                val request = Request.Builder()
+                    .url("http://$serverIp:8081/upload")
+                    .post(requestBody)
+                    .build()
+
+                mediaClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        Log.d("MappingViewModel", "Asset uploaded successfully: $filename")
+                        // The server stores it in 'uploads/' subdirectory
+                        val serverPath = "uploads/$filename"
+                        withContext(Dispatchers.Main) {
+                            onComplete(serverPath)
+                        }
+                    } else {
+                        throw Exception("Upload failed: ${response.code}")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MappingViewModel", "Unified upload failed", e)
+                withContext(Dispatchers.Main) {
+                    reportError("Upload failed: ${e.message}")
+                }
+            } finally {
+                _uiState.update { it.copy(isLoading = false, updateProgress = 1f) }
             }
         }
     }
