@@ -67,6 +67,12 @@ class VideoController @Inject constructor(
         try {
             val player = exoPlayer ?: return
             
+            // [Fix v1.18.6] Guard: Prevent ExoPlayer crash if a Client attempts to play a Server path
+            if (url.startsWith("/") && !java.io.File(url).exists()) {
+                Log.w("VideoController", "Skipping playback: file does not exist locally: $url")
+                return
+            }
+            
             // Build MediaItem
             val mediaItem = MediaItem.fromUri(Uri.parse(url))
             

@@ -420,11 +420,13 @@ sealed class MappingCommand {
 
     data class TriggerClip(
         val surfaceId: String,
-        val clip: MappingClip
+        val clip: MappingClip,
+        val deckIndex: Int = -1
     ) : MappingCommand() {
         override fun toJSONObject() = JSONObject().apply {
             put("type", "TRIGGER_CLIP")
             put("surfaceId", surfaceId)
+            put("deckIndex", deckIndex)
             val cObj = JSONObject().apply {
                 put("id", clip.id)
                 put("name", clip.name)
@@ -636,6 +638,7 @@ sealed class MappingCommand {
                     )
                     "TRIGGER_CLIP" -> {
                         val cObj = obj.getJSONObject("clip")
+                        val deckIndex = obj.optInt("deckIndex", -1)
                         val cParams = mutableMapOf<String, Float>()
                         if (cObj.has("shaderParameters")) {
                             val cPObj = cObj.getJSONObject("shaderParameters")
@@ -656,7 +659,8 @@ sealed class MappingCommand {
                                         mp.keys().forEach { k -> put(k, mp.getString(k)) }
                                     }
                                 }
-                            )
+                            ),
+                            deckIndex
                         )
                     }
                     "UPDATE_MEDIA_PARAM" -> UpdateMediaParam(
@@ -750,6 +754,38 @@ sealed class MappingCommand {
                         obj.optDouble("fxIntensity", 1.0).toFloat(),
                         obj.optString("preLook", "NONE")
                     )
+                    "UPDATE_CLIP_IN_SLOT" -> {
+                        val cObj = if (obj.isNull("clip")) null else obj.getJSONObject("clip")
+                        val deckIndex = obj.optInt("deckIndex", -1)
+                        val clip = cObj?.let {
+                            val cParams = mutableMapOf<String, Float>()
+                            if (it.has("shaderParameters")) {
+                                val cPObj = it.getJSONObject("shaderParameters")
+                                cPObj.keys().forEach { k -> cParams[k] = cPObj.getDouble(k).toFloat() }
+                            }
+                            MappingClip(
+                                id = it.getString("id"),
+                                name = it.getString("name"),
+                                sourceType = SourceType.valueOf(it.getString("sourceType")),
+                                path = it.optString("path", null).let { p -> if (p == "null" || p.isNullOrEmpty()) null else p },
+                                shaderParameters = cParams,
+                                shaderText = it.optString("shaderText", null).let { s -> if (s == "null" || s.isNullOrEmpty()) null else s },
+                                thumbnailPath = it.optString("thumbnailPath", null).let { t -> if (t == "null" || t.isNullOrEmpty()) null else t },
+                                mediaParams = mutableMapOf<String, String>().apply {
+                                    if (it.has("mediaParams")) {
+                                        val mp = it.getJSONObject("mediaParams")
+                                        mp.keys().forEach { k -> put(k, mp.getString(k)) }
+                                    }
+                                }
+                            )
+                        }
+                        UpdateClipInSlot(
+                            obj.getString("surfaceId"),
+                            obj.getInt("slotIndex"),
+                            clip,
+                            deckIndex
+                        )
+                    }
                     else -> null
                 }
             } catch (e: Exception) {
@@ -827,6 +863,47 @@ sealed class MappingCommand {
         override fun invert(state: MappingState): MappingCommand? {
             val surface = state.surfaces.find { it.id == surfaceId } ?: return null
             return RestoreSurface(surface)
+        }
+    }
+
+    data class UpdateClipInSlot(
+        val surfaceId: String,
+        val slotIndex: Int,
+        val clip: MappingClip?,
+        val deckIndex: Int = -1
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "UPDATE_CLIP_IN_SLOT")
+            put("surfaceId", surfaceId)
+            put("slotIndex", slotIndex)
+            put("deckIndex", deckIndex)
+            if (clip == null) {
+                put("clip", JSONObject.NULL)
+            } else {
+                val cObj = JSONObject().apply {
+                    put("id", clip.id)
+                    put("name", clip.name)
+                    put("sourceType", clip.sourceType.name)
+                    put("path", clip.path)
+                    if (clip.shaderText != null) put("shaderText", clip.shaderText)
+                    val paramsObj = JSONObject()
+                    clip.shaderParameters.forEach { (k, v) -> paramsObj.put(k, v.toDouble()) }
+                    put("shaderParameters", paramsObj)
+                    put("thumbnailPath", clip.thumbnailPath)
+                    
+                    val mpObj = JSONObject()
+                    clip.mediaParams.forEach { (k, v) -> mpObj.put(k, v) }
+                    put("mediaParams", mpObj)
+                }
+                put("clip", cObj)
+            }
+        }
+
+        override fun invert(state: MappingState): MappingCommand? {
+            val deck = state.decks.getOrNull(state.activeDeckIndex) ?: return null
+            val clips = deck.layerClips[surfaceId] ?: return null
+            val oldClip = clips.getOrNull(slotIndex)
+            return UpdateClipInSlot(surfaceId, slotIndex, oldClip)
         }
     }
 }

@@ -779,25 +779,30 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
 
         when (surface.sourceType) {
             SourceType.VIDEO -> {
-                // Draw ONLY video, ignore all shader slots
-                // Log.d("RendererPipeline", "Surface ${surface.id} → sourceType=VIDEO → drawing VIDEO")
-                
-                // Create a temporary VIDEO slot for rendering
+                // [v1.18.16] Primary Video Content
                 val videoSlot = EffectSlot(
                     sourceType = SourceType.VIDEO,
                     content = surface.videoPath ?: "",
                     opacity = 1.0f
                 )
                 renderSlotFlat(videoSlot, surface)
+                
+                // [v1.18.16] Overlay slots
+                surface.visualsSlot?.let { renderSlotFlat(it, surface) }
+                surface.fxSlot?.let { renderSlotFlat(it, surface) }
             }
             SourceType.MJPEG_CAMERA -> {
-                // Create temp slot for Camera
+                // [v1.18.16] Primary Camera Content
                 val camSlot = EffectSlot(
                     sourceType = SourceType.MJPEG_CAMERA,
                     content = "LIVE",
                     opacity = 1.0f
                 )
                 renderSlotFlat(camSlot, surface)
+                
+                // [v1.18.16] Overlay slots
+                surface.visualsSlot?.let { renderSlotFlat(it, surface) }
+                surface.fxSlot?.let { renderSlotFlat(it, surface) }
             }
             SourceType.SHADER -> {
             // [v1.14.1] Ensure we actually draw something to FBO
@@ -811,13 +816,17 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
             }
         }
         SourceType.IMAGE -> {
-            // [v1.14.1] Explicit IMAGE handling in MultiLayer
+            // [v1.18.16] Primary Image Content
             val bg = surface.backgroundsSlot
             if (bg != null && bg.sourceType == SourceType.IMAGE) {
                 renderSlotFlat(bg, surface)
             } else {
                 renderBlackOccluder(surface)
             }
+            
+            // [v1.18.16] Overlay slots
+            surface.visualsSlot?.let { renderSlotFlat(it, surface) }
+            surface.fxSlot?.let { renderSlotFlat(it, surface) }
         }
             else -> {
                 // [v1.14.1] Automatic Occlusion Fallback

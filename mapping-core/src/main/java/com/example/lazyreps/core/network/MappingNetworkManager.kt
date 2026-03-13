@@ -10,9 +10,11 @@ import org.java_websocket.handshake.ServerHandshake
 import org.java_websocket.server.WebSocketServer
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
+import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.URI
+import java.net.URLDecoder
 
 interface NetworkCallback {
     fun onCommandReceived(command: MappingCommand)
@@ -220,6 +222,32 @@ class MappingNetworkManager(
                 if (uri == "/info" || uri == "/version") {
                     val json = "{\"status\":\"ok\",\"version\":\"$serverVersion\",\"type\":\"MappingNode\"}"
                     return newFixedLengthResponse(Response.Status.OK, "application/json", json)
+                }
+
+                if (uri == "/list") {
+                    val rawPath = session.parms["path"]
+                    val requestedPath = if (rawPath != null) URLDecoder.decode(rawPath, "UTF-8") else null
+                    
+                    val targetDir = if (requestedPath != null && requestedPath.isNotEmpty()) {
+                        File(requestedPath)
+                    } else storageDir
+                    
+                    if (!targetDir.exists() || !targetDir.isDirectory) {
+                        return newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "Directory not found")
+                    }
+
+                    val files = targetDir.listFiles() ?: emptyArray()
+                    val jsonArray = org.json.JSONArray()
+                    
+                    files.filter { !it.name.startsWith(".") }.forEach { file ->
+                        val obj = org.json.JSONObject()
+                        obj.put("name", file.name)
+                        obj.put("path", file.absolutePath)
+                        obj.put("size", file.length())
+                        obj.put("isDir", file.isDirectory)
+                        jsonArray.put(obj)
+                    }
+                    return newFixedLengthResponse(Response.Status.OK, "application/json", jsonArray.toString())
                 }
                 
                 // [Phase 5] Serve Video Files

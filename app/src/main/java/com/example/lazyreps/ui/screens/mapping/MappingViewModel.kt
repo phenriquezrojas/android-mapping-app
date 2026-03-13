@@ -42,6 +42,13 @@ import okio.source
 import okio.buffer
 import com.example.lazyreps.core.camera.CameraStreamManager
 import fi.iki.elonen.NanoHTTPD
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.media.ThumbnailUtils
+import android.provider.MediaStore
+import java.io.ByteArrayOutputStream
+import java.net.URLDecoder
+import java.net.URLEncoder
 
 
 
@@ -52,7 +59,7 @@ data class MappingProject(
     val updatedAt: Long = System.currentTimeMillis()
 )
 
-data class RemoteVideo(val name: String, val path: String, val size: Long)
+data class RemoteVideo(val name: String, val path: String, val size: Long, val isDir: Boolean = false)
 
 enum class ConnectionStatus {
     DISCONNECTED, CONNECTING, CONNECTED, ERROR
@@ -95,15 +102,20 @@ data class MappingUiState(
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
     // [v1.8.2] Local Drag Lock to prevent remote jitter
-    val isLocalDragging: Boolean = false,
-    // Transformations (Local to UI, not synced via network)
     val viewScale: Float = 1f,
+    val isScanningRemote: Boolean = false,
+    val lastScanError: String? = null,
+    val remoteThumbnails: Map<String, android.graphics.Bitmap> = emptyMap(),
+    // [v1.8.2] Local Drag Lock to prevent remote jitter
+    val isLocalDragging: Boolean = false,
     val viewOffset: androidx.compose.ui.geometry.Offset = androidx.compose.ui.geometry.Offset.Zero,
+    val remoteCurrentPath: String? = null,
     // Performance & Sync
     val targetFPS: Int = 24,
     val globalBPM: Float = 120f,
     val isLoading: Boolean = false,
-    val discoveredServers: List<String> = emptyList() // [v1.12.0] For multi-server selection
+    val discoveredServers: List<String> = emptyList(), // [v1.12.0] For multi-server selection
+    val showDisconnectDialog: Boolean = false // [v1.18.9] Disconnect confirmation dialog
 )
 
 enum class ExecutionMode {
@@ -154,11 +166,19 @@ class MappingViewModel @Inject constructor(
     }
     private val discoveryService = MappingDiscoveryService(context)
     private val prefs = context.getSharedPreferences("mapping_presets", Context.MODE_PRIVATE)
-    private val okHttpClient = OkHttpClient.Builder()
-        .connectTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+    private val apiClient = OkHttpClient.Builder()
+        .connectTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+
+    private val mediaClient = OkHttpClient.Builder()
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }) // Limit concurrent thumbnails
+        .build()
+
+    private val thumbnailLock = Any()
 
     // --- Command History (Phase 7) ---
     private val undoStack = java.util.ArrayDeque<Pair<MappingCommand, MappingCommand>>()
@@ -555,13 +575,6 @@ class MappingViewModel @Inject constructor(
                     }
                 }
             }
-        }
-    }
-
-    fun retryConnection() {
-        val ip = _uiState.value.serverIp
-        if (!ip.isNullOrBlank()) {
-            connectToRemoteServer(ip)
         }
     }
 
@@ -1730,7 +1743,7 @@ class MappingViewModel @Inject constructor(
                 removeSurface(command.surfaceId, fromRemote = true)
             }
             is MappingCommand.TriggerClip -> {
-                triggerClip(command.surfaceId, command.clip, fromRemote = true)
+                triggerClip(command.surfaceId, command.clip, fromRemote = true, remoteDeckIndex = command.deckIndex)
             }
             is MappingCommand.UpdateVertex -> {
                 _uiState.value.surfaces.find { it.id == command.surfaceId }?.let { surface ->
@@ -1944,6 +1957,9 @@ class MappingViewModel @Inject constructor(
             is MappingCommand.SetMediaSource -> {
                 handleSetMediaSource(command)
             }
+            is MappingCommand.UpdateClipInSlot -> {
+                updateClipInSlot(command.surfaceId, command.slotIndex, command.clip, fromRemote = true, remoteDeckIndex = command.deckIndex)
+            }
             else -> {
                 Log.d("MappingViewModel", "Unhandled command: ${command.toJSONObject()}")
             }
@@ -1996,6 +2012,7 @@ class MappingViewModel @Inject constructor(
         // Si somos el servidor, propagar a otros clientes
         if (_uiState.value.executionMode == ExecutionMode.SERVER && !isHistoryAction) {
              networkManager.sendCommand(command)
+             broadcastState()
         }
     }
 
@@ -2039,10 +2056,13 @@ class MappingViewModel @Inject constructor(
                 videoController.stop()
             }
 
-            // 2. Strict State Replacement
+            // 2. Strict State Replacement — [v1.18.9] Now includes decks for Dashboard sync
             _uiState.update { 
                 it.copy(
                     surfaces = state.surfaces,
+                    decks = state.decks,                    // [v1.18.9] Sync Dashboard decks
+                    // [v1.18.14] Independent Navigation: Stop applying activeDeckIndex from network
+                    // activeDeckIndex = state.activeDeckIndex, 
                     isProjectionMode = state.outputMode == "SHOW",
                     screenWidth = state.screenWidth,
                     screenHeight = state.screenHeight,
@@ -2066,32 +2086,21 @@ class MappingViewModel @Inject constructor(
     }
 
 
-
-
-    private fun saveCurrentState(addToHistory: Boolean = true) {
-        // [Phase 7] history handled by command inversion in dispatchCommand
-        val json = getCurrentStateJson()
-        // Procedimiento de guardado real (persistir a disco)...
-        try {
-            val file = java.io.File(context.filesDir, "current_project.json")
-            file.writeText(json)
-        } catch (e: Exception) {
-            Log.e("MappingViewModel", "Error saving state: ${e.message}")
-        }
-    }
-
     fun getCurrentStateJson(): String {
         val ui = _uiState.value
-        val state = MappingState(
-             outputMode = if (ui.isProjectionMode) "SHOW" else "EDIT",
-             surfaces = ui.surfaces,
-             screenWidth = ui.screenWidth,
-             screenHeight = ui.screenHeight,
-             isFullScreen = ui.isFullScreen,
-             targetFPS = ui.targetFPS,
-             globalBPM = ui.globalBPM
-        )
-        return state.toJSON()
+        // [v1.18.9] Use toMappingState() to ensure decks are always included
+        return ui.toMappingState().toJSON()
+    }
+
+    /**
+     * Broadcasts the full current state to all connected clients.
+     * Used to ensure eventual consistency across all dashboards.
+     */
+    fun broadcastState() {
+        if (_uiState.value.executionMode == ExecutionMode.SERVER) {
+            val state = _uiState.value.toMappingState()
+            networkManager.sendState(state)
+        }
     }
 
 
@@ -2149,11 +2158,15 @@ class MappingViewModel @Inject constructor(
                 renderer?.requestRender?.invoke() // Force immediate render
                 
                 // [Phase 5] Use VideoController
-                videoController.start(resolvedUri.toString(), id)
-                renderer?.getSurfaceForId(id) { surface ->
-                     android.os.Handler(android.os.Looper.getMainLooper()).post {
-                         videoController.attachSurface(surface)
-                     }
+                if (_uiState.value.executionMode == ExecutionMode.SERVER || fromRemote) {
+                    videoController.start(resolvedUri.toString(), id)
+                    renderer?.getSurfaceForId(id) { surface ->
+                         android.os.Handler(android.os.Looper.getMainLooper()).post {
+                             videoController.attachSurface(surface)
+                         }
+                    }
+                } else {
+                    Log.d("MappingViewModel", "Skipping local playback in CLIENT mode to avoid ghosting")
                 }
                 
                 // --- CRITICAL FIX: BURST SEQUENCE ---
@@ -2200,20 +2213,17 @@ class MappingViewModel @Inject constructor(
                 
                 // 1. Ensure file is in our served directory (ExternalFilesDir)
                 val targetDir = context.getExternalFilesDir(null) ?: context.filesDir
-                var finalFile: File? = null
-                
-                // Try to resolve path first
                 val localPath = resolveLocalPath(uri)?.path
-                if (localPath != null) {
+                val finalFile: File = if (localPath != null) {
                     val file = File(localPath)
                     // If file is already in our served dir, just use it
                     if (file.parentFile?.absolutePath == targetDir.absolutePath) {
-                        finalFile = file
+                        file
                     } else {
                         // Copy to served dir
                          val dest = File(targetDir, file.name)
                          file.copyTo(dest, overwrite = true)
-                         finalFile = dest
+                         dest
                     }
                 } else {
                     // Content URI -> Copy to temp file in served dir
@@ -2223,10 +2233,10 @@ class MappingViewModel @Inject constructor(
                             input.copyTo(output)
                         }
                     }
-                    finalFile = dest
+                    dest
                 }
                 
-                if (finalFile != null && finalFile.exists()) {
+                if (finalFile.exists()) {
                     val url = "http://$myIp:8081/${finalFile.name}"
                     Log.d("MappingViewModel", "Streaming video from $url")
                     
@@ -2248,37 +2258,137 @@ class MappingViewModel @Inject constructor(
         }
     }
 
-    fun fetchRemoteLibrary() {
-        val serverIp = _uiState.value.serverIp ?: return
-        if (serverIp == "Searching..." || serverIp == "Local Server" || serverIp == "Not found") return
+    fun navigateRemote(path: String) {
+        Log.d("MappingViewModel", "ACTION: Navigating remote to: $path")
+        fetchRemoteLibrary(path)
+    }
 
+    fun fetchRemoteLibrary(path: String? = null) {
+        val serverIp = _uiState.value.serverIp
+        Log.d("MappingViewModel", "fetchRemoteLibrary called with path=$path. Current IP: $serverIp")
+        if (serverIp == null) {
+            Log.w("MappingViewModel", "fetchRemoteLibrary aborted: serverIp is null")
+            return
+        }
+        if (serverIp == "Searching..." || serverIp == "Local Server" || serverIp == "Not found") {
+            Log.w("MappingViewModel", "fetchRemoteLibrary aborted: invalid serverIp state ($serverIp)")
+            return
+        }
+
+        // Default path as requested by USER
+        val effectivePath = path ?: _uiState.value.remoteCurrentPath ?: "/storage/emulated/0/Movies"
+        
+        _uiState.update { it.copy(isScanningRemote = true, lastScanError = null, remoteCurrentPath = effectivePath) }
+        
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val url = "http://$serverIp:8081/list"
-                Log.d("MappingViewModel", "Fetching remote library from: $url")
+                // Encode path for URL
+                val encodedPath = URLEncoder.encode(effectivePath, "UTF-8")
+                val url = "http://$serverIp:8081/list?path=$encodedPath"
+                Log.d("MappingViewModel", "CRITICAL: Fetching remote library from: $url")
+                
                 val request = Request.Builder()
                     .url(url)
                     .get()
                     .build()
 
-                okHttpClient.newCall(request).execute().use { response ->
+                apiClient.newCall(request).execute().use { response ->
+                    Log.d("MappingViewModel", "Remote library response code: ${response.code}")
                     if (response.isSuccessful) {
                         val body = response.body?.string() ?: "[]"
-                        val jsonArray = org.json.JSONArray(body)
+                        val jsonArray = JSONArray(body)
                         val list = mutableListOf<RemoteVideo>()
                         for (i in 0 until jsonArray.length()) {
                             val obj = jsonArray.getJSONObject(i)
                             list.add(RemoteVideo(
                                 name = obj.getString("name"),
                                 path = obj.getString("path"),
-                                size = obj.getLong("size")
+                                size = obj.getLong("size"),
+                                isDir = if (obj.has("isDir")) obj.getBoolean("isDir") else false
                             ))
                         }
-                        _uiState.update { it.copy(remoteLibrary = list) }
+                        // Sort: Dirs first, then files
+                        val sortedList = list.sortedWith(compareBy({ !it.isDir }, { it.name.lowercase() }))
+                        Log.d("MappingViewModel", "Successfully loaded ${sortedList.size} remote items")
+                        _uiState.update { it.copy(remoteLibrary = sortedList, isScanningRemote = false) }
+                    } else {
+                        Log.e("MappingViewModel", "Server Error: ${response.code}")
+                        _uiState.update { it.copy(isScanningRemote = false, lastScanError = "Server Error: ${response.code}") }
                     }
                 }
             } catch (e: Exception) {
-                Log.e("MappingViewModel", "Error fetching remote library: ${e.message}")
+                Log.e("MappingViewModel", "Error fetching remote library: ${e.message}", e)
+                _uiState.update { it.copy(isScanningRemote = false, lastScanError = "Network Error: ${e.message}") }
+            } finally {
+                if (_uiState.value.isScanningRemote) {
+                    _uiState.update { it.copy(isScanningRemote = false) }
+                }
+            }
+        }
+    }
+
+    fun navigateRemoteBack() {
+        val current = _uiState.value.remoteCurrentPath ?: return
+        if (current == "Local Server") return
+        
+        val file = File(current)
+        val parent = file.parent ?: "/storage/emulated/0"
+        Log.d("MappingViewModel", "navigateRemoteBack: from $current to $parent")
+        fetchRemoteLibrary(parent)
+    }
+
+    fun fetchRemoteThumbnail(remotePath: String) {
+        val serverIp = _uiState.value.serverIp ?: return
+        if (serverIp == "Searching..." || serverIp == "Local Server") return
+        if (_uiState.value.remoteThumbnails.containsKey(remotePath)) return
+
+        // [v1.18.3] SECURE LOCK: Set an immediate transparent 1x1 placeholder
+        // This PREVENTS Compose from calling fetch() hundreds of times per second
+        // if the network is slow or the projector takes long to generate the .mp4 cover.
+        _uiState.update { state ->
+            val tempMap = state.remoteThumbnails.toMutableMap()
+            tempMap[remotePath] = android.graphics.Bitmap.createBitmap(1, 1, android.graphics.Bitmap.Config.ARGB_8888)
+            state.copy(remoteThumbnails = tempMap)
+        }
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val encodedPath = java.net.URLEncoder.encode(remotePath, "UTF-8")
+                val url = "http://$serverIp:8081/thumbnail?path=$encodedPath"
+                val request = Request.Builder().url(url).get().build()
+
+                mediaClient.newCall(request).execute().use { response ->
+                    if (response.isSuccessful) {
+                        val bytes = response.body?.bytes()
+                        if (bytes != null) {
+                            val bitmap = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            if (bitmap != null) {
+                                // Real image received, replace placeholder
+                                _uiState.update { state ->
+                                    val newMap = state.remoteThumbnails.toMutableMap()
+                                    newMap[remotePath] = bitmap
+                                    state.copy(remoteThumbnails = newMap)
+                                }
+                            }
+                        }
+                    } else if (response.code == 429 || response.code == 404 || response.code == 500) {
+                         // Falló el server. Dejar que la UI use icono genérico (removiendo el placeholder para no ocultar)
+                         // O dejar el placeholder. Es mejor quitarlo para que retorne a renderizado genérico.
+                         _uiState.update { state ->
+                             val newMap = state.remoteThumbnails.toMutableMap()
+                             newMap.remove(remotePath)
+                             state.copy(remoteThumbnails = newMap)
+                         }
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("MappingViewModel", "fetchRemoteThumbnail failed for $remotePath: ${e.message}")
+                // Remove placeholder in case of network error
+                _uiState.update { state ->
+                     val newMap = state.remoteThumbnails.toMutableMap()
+                     newMap.remove(remotePath)
+                     state.copy(remoteThumbnails = newMap)
+                 }
             }
         }
     }
@@ -2557,14 +2667,22 @@ class MappingViewModel @Inject constructor(
         )
     }
 
-    fun triggerClip(surfaceId: String, clip: MappingClip, fromRemote: Boolean = false) {
+    fun triggerClip(surfaceId: String, clip: MappingClip, fromRemote: Boolean = false, remoteDeckIndex: Int = -1) {
         if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            dispatchCommand(MappingCommand.TriggerClip(surfaceId, clip))
+            if (clip.sourceType == SourceType.VIDEO) {
+                val isLocal = clip.path?.startsWith("file://") == true || clip.path?.startsWith("content://") == true
+                if (isLocal) {
+                    streamLocalVideoForClip(surfaceId, clip)
+                    return
+                }
+            }
+            dispatchCommand(MappingCommand.TriggerClip(surfaceId, clip, _uiState.value.activeDeckIndex))
             return
         }
 
         // Determine which slot to update based on active deck
-        val activeDeck = _uiState.value.decks.getOrNull(_uiState.value.activeDeckIndex)
+        val targetDeckIndex = if (remoteDeckIndex >= 0) remoteDeckIndex else _uiState.value.activeDeckIndex
+        val activeDeck = _uiState.value.decks.getOrNull(targetDeckIndex)
         val slotType = when (activeDeck?.name) {
             "Backgrounds" -> EffectSlotType.BACKGROUNDS
             "FX 1" -> EffectSlotType.FX
@@ -2598,7 +2716,59 @@ class MappingViewModel @Inject constructor(
         )
 
         // Update the appropriate slot
-        setEffectInSlot(surfaceId, slotType, effectSlot, fromRemote = true)
+        setEffectInSlot(surfaceId, slotType, effectSlot, fromRemote = fromRemote)
+    }
+
+    private fun streamLocalVideoForClip(surfaceId: String, clip: MappingClip) {
+        val myIp = _uiState.value.localIp
+        if (myIp == null) {
+            reportError("Cannot stream: No IP address")
+            return
+        }
+        val uri = Uri.parse(clip.path!!)
+
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _uiState.update { it.copy(isLoading = true) }
+                
+                val targetDir = context.getExternalFilesDir(null) ?: context.filesDir
+                val localPath = resolveLocalPath(uri)?.path
+                val finalFile: File = if (localPath != null) {
+                    val file = File(localPath)
+                    if (file.parentFile?.absolutePath == targetDir.absolutePath) {
+                        file
+                    } else {
+                         val dest = File(targetDir, file.name)
+                         file.copyTo(dest, overwrite = true)
+                         dest
+                    }
+                } else {
+                    val dest = File(targetDir, "stream_${System.currentTimeMillis()}.mp4")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        dest.outputStream().use { output ->
+                            input.copyTo(output)
+                        }
+                    }
+                    dest
+                }
+                
+                if (finalFile.exists()) {
+                    val url = "http://$myIp:8081/${finalFile.name}"
+                    Log.d("MappingViewModel", "Streaming video for clip from $url")
+                    
+                    val newClip = clip.copy(path = url)
+                    dispatchCommand(MappingCommand.TriggerClip(surfaceId, newClip))
+                    _uiState.update { it.copy(isLoading = false) }
+                } else {
+                    reportError("Failed to prepare video file for streaming")
+                    _uiState.update { it.copy(isLoading = false) }
+                }
+            } catch (e: Exception) {
+                Log.e("MappingViewModel", "Stream preparation failed", e)
+                reportError("Error streaming video: ${e.message}")
+                _uiState.update { it.copy(isLoading = false) }
+            }
+        }
     }
 
     /**
@@ -2623,10 +2793,6 @@ class MappingViewModel @Inject constructor(
                     }
                     
                     // [v1.9.0 FASE 2.7] Smart Toggle Logic:
-                    // Only clear (toggle off) if content matches AND it corresponds to the currently active SourceType.
-                    // If content matches but SourceType is different (e.g. Video is loaded but Shader is active),
-                    // we do NOT clear. We let it proceed to ACTIVATE the switching logic below.
-                    
                     val isActiveSource = (effect?.sourceType == SourceType.VIDEO && surface.sourceType == SourceType.VIDEO) ||
                                          (effect?.sourceType == SourceType.SHADER && surface.sourceType == SourceType.SHADER) ||
                                          (effect?.sourceType == SourceType.MJPEG_CAMERA && surface.sourceType == SourceType.MJPEG_CAMERA) ||
@@ -2642,37 +2808,19 @@ class MappingViewModel @Inject constructor(
                     // --- AUTHORITY LOGIC REFINED [v1.9.0 FASE 2.6] ---
                     
                     if (newEffect != null) {
-                        // [v1.9.0 FASE 2.8] Authority Refactor: Switch mode based on Content Type, not Slot Type.
-                        // This allows Videos to play correctly even if triggered from atypical slots,
-                        // and ensures Shaders always engage the Shader pipeline.
-                        
                     if (newEffect.sourceType == SourceType.VIDEO) {
                          Log.d("MappingViewModel", "Authority: Switching to VIDEO for ${surface.id}. Content: ${newEffect.content}")
-                         
-                         // [v1.9.0 FASE 4.0] Content Replacement Fix:
-                         // Check if we are switching content on the SAME layer.
-                         val isSameContent = surface.sourceType == SourceType.VIDEO && surface.videoPath == newEffect.content
                          
                          newSurface = newSurface.copy(
                              sourceType = SourceType.VIDEO,
                              videoPath = newEffect.content
                          )
                          
-                         // Wake up or Setup Player
-                         viewModelScope.launch(Dispatchers.Main) {
-                             // [Phase 5] Use VideoController
-                             // Note: In Phase 5 we only support ONE active video (Nebula limit).
-                             // If isSameContent check is complex with single controller, we just restart for now or check controller state.
-                             Log.d("MappingViewModel", "Delegating playback to VideoController for ${surface.id}")
-                             videoController.start(newEffect.content, surface.id)
-                             
-                             // [v1.13.6] FIX: Attach surface for Dashboard triggers
-                             renderer?.getSurfaceForId(surface.id) { slotSurface ->
-                                 android.os.Handler(android.os.Looper.getMainLooper()).post {
-                                     videoController.attachSurface(slotSurface)
-                                 }
-                             }
-
+                         // Delegamos a setVideoForSurface para mantener una única fuente de verdad
+                         // y aprovechar render kicks + control de videoController
+                         val uri = try { Uri.parse(newEffect.content) } catch (e: Exception) { Uri.EMPTY }
+                         if (uri != Uri.EMPTY) {
+                             setVideoForSurface(surface.id, uri, fromRemote)
                          }
                     } else if (newEffect.sourceType == SourceType.SHADER) {
                         Log.d("MappingViewModel", "Authority: Switching to SHADER for ${surface.id}")
@@ -2683,11 +2831,19 @@ class MappingViewModel @Inject constructor(
                             shaderText = newEffect.shaderText
                         )
                         
-                        // [v1.14.4] Surgical Stop: Only if this surface was playing
+                        // [v1.14.4] Surgical Stop: Only if this surface was playing AND no other slot needs video
                         viewModelScope.launch(Dispatchers.Main) {
                             if (surface.id == videoController.activeSurfaceId) {
-                                Log.d("MappingViewModel", "[AUTHORITY] Shader taking control for ${surface.id}, stopping active Video")
-                                videoController.stop()
+                                val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
+                                
+                                if (!otherSlotsNeedVideo) {
+                                    Log.d("MappingViewModel", "[AUTHORITY] Shader taking control for ${surface.id}, stopping active Video")
+                                    videoController.stop()
+                                } else {
+                                    Log.d("MappingViewModel", "[AUTHORITY] Shader active, but keeping Video running for other slots on ${surface.id}")
+                                }
                             }
                         }
                     } else if (newEffect.sourceType == SourceType.IMAGE) {
@@ -2699,7 +2855,12 @@ class MappingViewModel @Inject constructor(
                          // [v1.14.4] Surgical Stop
                          viewModelScope.launch(Dispatchers.Main) {
                             if (surface.id == videoController.activeSurfaceId) {
-                                videoController.stop()
+                                val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
+                                if (!otherSlotsNeedVideo) {
+                                    videoController.stop()
+                                }
                             }
                         }
                     } else if (newEffect.sourceType == SourceType.MJPEG_CAMERA) {
@@ -2711,7 +2872,12 @@ class MappingViewModel @Inject constructor(
                          // [v1.14.4] Surgical Stop
                          viewModelScope.launch(Dispatchers.Main) {
                             if (surface.id == videoController.activeSurfaceId) {
-                                videoController.stop()
+                                val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
+                                                          (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
+                                if (!otherSlotsNeedVideo) {
+                                    videoController.stop()
+                                }
                             }
                         }
                     }
@@ -2779,10 +2945,7 @@ class MappingViewModel @Inject constructor(
     }
 
     fun setActiveDeck(index: Int, fromRemote: Boolean = false) {
-        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            dispatchCommand(MappingCommand.SetActiveDeck(index))
-            return
-        }
+        // [v1.18.14] Independent Navigation: This action is now purely local.
         _uiState.update { it.copy(activeDeckIndex = index) }
         saveCurrentState()
     }
@@ -2815,10 +2978,17 @@ class MappingViewModel @Inject constructor(
         updateClipInSlot(surfaceId, slotIndex, null)
     }
 
-    fun updateClipInSlot(surfaceId: String, slotIndex: Int, clip: MappingClip?) {
+    fun updateClipInSlot(surfaceId: String, slotIndex: Int, clip: MappingClip?, fromRemote: Boolean = false, remoteDeckIndex: Int = -1) {
+        if (!fromRemote && _uiState.value.executionMode == ExecutionMode.CLIENT) {
+            dispatchCommand(MappingCommand.UpdateClipInSlot(surfaceId, slotIndex, clip, _uiState.value.activeDeckIndex))
+            return
+        }
+
+        val targetDeckIndex = if (remoteDeckIndex >= 0) remoteDeckIndex else _uiState.value.activeDeckIndex
+        
         _uiState.update { state ->
             val updatedDecks = state.decks.mapIndexed { index, deck ->
-                if (index == state.activeDeckIndex) {
+                if (index == targetDeckIndex) {
                     val currentClips = deck.layerClips[surfaceId]?.toMutableList() ?: MutableList<MappingClip?>(12) { null }
                     // Asegurar capacidad
                     while (currentClips.size <= slotIndex) currentClips.add(null)
@@ -2829,6 +2999,9 @@ class MappingViewModel @Inject constructor(
             state.copy(decks = updatedDecks)
         }
         saveCurrentState()
+        
+        // Ensure all clients reflect the clip slot change
+        broadcastState()
     }
 
     fun updateMediaParam(
@@ -2858,6 +3031,7 @@ class MappingViewModel @Inject constructor(
             state.copy(surfaces = updatedSurfaces)
         }
         syncRenderer()
+        broadcastState()
     }
 
     fun updateClipMediaParam(surfaceId: String, slotIndex: Int, key: String, value: String) {
@@ -2939,7 +3113,7 @@ class MappingViewModel @Inject constructor(
                 val url = "http://$serverIp:8081/app.apk"
                 val request = Request.Builder().url(url).build()
                 
-                okHttpClient.newCall(request).execute().use { response ->
+                mediaClient.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                         val apkFile = File(context.filesDir, "update.apk")
                         val inputStream = response.body!!.byteStream()
@@ -3001,7 +3175,7 @@ class MappingViewModel @Inject constructor(
                     .post(requestBody)
                     .build()
 
-                okHttpClient.newCall(request).execute().use { response ->
+                mediaClient.newCall(request).execute().use { response ->
                     if (response.isSuccessful) {
                          Log.d("MappingViewModel", "Update uploaded successfully.")
                          _uiState.update { it.copy(updateProgress = 1f) }
@@ -3061,6 +3235,14 @@ class MappingViewModel @Inject constructor(
                 return@launch
             }
             processCommand(command)
+            
+            // Surgical Fix: Only broadcast functional commands and trigger sync for non-handshake events.
+            if (_uiState.value.executionMode == ExecutionMode.SERVER && 
+                command !is MappingCommand.ClientHello && 
+                command !is MappingCommand.ServerHello) {
+                networkManager.sendCommand(command)
+                broadcastState()
+            }
         }
     }
 
@@ -3100,16 +3282,37 @@ class MappingViewModel @Inject constructor(
     private var reconnectJob: kotlinx.coroutines.Job? = null
 
     override fun onClientDisconnected(address: String) {
-         viewModelScope.launch(Dispatchers.Main) {
+        viewModelScope.launch(Dispatchers.Main) {
             Log.d("MappingViewModel", "Disconnected: $address")
             if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
                 updateConnectionStatus(ConnectionStatus.DISCONNECTED)
-                if (!isReconnecting) {
-                    reconnectJob?.cancel()
-                    attemptReconnect(address)
-                }
+                // [v1.18.9] Show disconnect dialog instead of silent auto-reconnect
+                _uiState.update { it.copy(showDisconnectDialog = true) }
             }
-         }
+        }
+    }
+
+    fun retryConnection() {
+        val targetIp = _uiState.value.serverIp ?: return
+        _uiState.update { it.copy(showDisconnectDialog = false) }
+        attemptReconnect(targetIp)
+    }
+
+    fun confirmDisconnect() {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        isReconnecting = false
+        networkManager.stopAll()
+        clearAll()
+        _uiState.update { it.copy(
+            executionMode = ExecutionMode.STANDALONE,
+            connectionStatus = ConnectionStatus.DISCONNECTED,
+            showDisconnectDialog = false,
+            serverIp = null,
+            decks = emptyList(),
+            activeDeckIndex = 0
+        )}
+        Log.d("MappingViewModel", "User confirmed disconnect. State cleared.")
     }
 
     private fun attemptReconnect(address: String) {
@@ -3122,20 +3325,19 @@ class MappingViewModel @Inject constructor(
         Log.d("MappingViewModel", "Attempting auto-reconnect to $targetIp in ${if(isUpdatePending) "10s" else "3s"}...")
         
         reconnectJob = viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(if(isUpdatePending) 10000 else 3000) // Wait longer if we just pushed an update
-             if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
-                 // Final check before reconnecting
-                 if (_uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
-                     Log.d("MappingViewModel", "Already connected, skipping auto-reconnect.")
-                     isReconnecting = false
-                     return@launch
-                 }
-                  Log.d("MappingViewModel", "Reconnecting now...")
-                  val filesDir = context.getExternalFilesDir(null) ?: context.filesDir
-                  networkManager.connectClient(targetIp, filesDir, com.example.lazyreps.BuildConfig.VERSION_NAME)
-             }
-             isReconnecting = false
-             reconnectJob = null
+            kotlinx.coroutines.delay(if(isUpdatePending) 10000 else 3000)
+            if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+                if (_uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
+                    Log.d("MappingViewModel", "Already connected, skipping auto-reconnect.")
+                    isReconnecting = false
+                    return@launch
+                }
+                Log.d("MappingViewModel", "Reconnecting now...")
+                val filesDir = context.getExternalFilesDir(null) ?: context.filesDir
+                networkManager.connectClient(targetIp, filesDir, com.example.lazyreps.BuildConfig.VERSION_NAME)
+            }
+            isReconnecting = false
+            reconnectJob = null
         }
     }
 
@@ -3172,6 +3374,56 @@ class MappingViewModel @Inject constructor(
     }
 
     override fun onHttpRequest(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response? {
+        val uri = session.uri ?: ""
+        if (uri == "/thumbnail") {
+            val rawPath = session.parms["path"] ?: return null
+            val path = URLDecoder.decode(rawPath, "UTF-8")
+            val file = File(path)
+            if (!file.exists()) return null
+
+            try {
+                // Sincronización para no saturar la CPU del proyector con múltiples miniaturas
+                val bitmap = synchronized(thumbnailLock) {
+                    val isVideo = file.name.lowercase().let { it.endsWith(".mp4") || it.endsWith(".mkv") || it.endsWith(".avi") || it.endsWith(".mov") }
+                    if (isVideo) {
+                        ThumbnailUtils.createVideoThumbnail(file.absolutePath, MediaStore.Images.Thumbnails.MINI_KIND)
+                    } else {
+                         val options = BitmapFactory.Options().apply { inSampleSize = 4 }
+                         BitmapFactory.decodeFile(file.absolutePath, options)
+                    }
+                }
+
+                if (bitmap != null) {
+                    // [v1.18.3] EXTREME DOWN-SCALING (-90% SIZE requested by Senior Android constraints)
+                    // Original MP4 thumbnails are 512x384. This scales them down to Max 128px width, drastically lowering memory & network footprint.
+                    val scaleFactor = 120.0f / bitmap.width.coerceAtLeast(1)
+                    val targetW = (bitmap.width * scaleFactor).toInt().coerceIn(32, 128)
+                    val targetH = (bitmap.height * scaleFactor).toInt().coerceIn(32, 128)
+                    
+                    val scaledBitmap = android.graphics.Bitmap.createScaledBitmap(bitmap, targetW, targetH, true)
+
+                    val stream = ByteArrayOutputStream()
+                    // 30 quality = brutal compression. For thumbnails 128x128 we don't need HQ.
+                    scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 30, stream)
+                    val byteArray = stream.toByteArray()
+                    
+                    // Cleanup heavy stuff on Server
+                    if (scaledBitmap != bitmap) {
+                        scaledBitmap.recycle()
+                    }
+                    bitmap.recycle() // Release original giant bitmap ASAP
+
+                    return NanoHTTPD.newFixedLengthResponse(
+                        NanoHTTPD.Response.Status.OK, 
+                        "image/jpeg", 
+                        byteArray.inputStream(), 
+                        byteArray.size.toLong()
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e("MappingViewModel", "Failed to generate thumbnail for $path: ${e.message}")
+            }
+        }
         return cameraStreamManager.handleRequest(session)
     }
 
@@ -3253,7 +3505,7 @@ class MappingViewModel @Inject constructor(
                     
                     // Start Video
                     Log.i("MappingViewModel", "Starting Video from URL: ${command.url}")
-                    val uri = Uri.parse(command.url)
+                    // val uri = Uri.parse(command.url)
                     // We reuse setVideoForSurface logic via internal implementation or direct call
                     // setVideoForSurface usually handles local/content logic, but for direct streaming we might need direct start
                     videoController.start(command.url, command.surfaceId)

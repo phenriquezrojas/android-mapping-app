@@ -23,6 +23,7 @@ import com.example.lazyreps.ui.screens.mapping.MappingViewModel
 import com.example.lazyreps.core.models.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import com.example.lazyreps.ui.screens.mapping.PremiumDialog
 import android.net.Uri
 
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
@@ -202,6 +203,11 @@ fun DashboardScreen(
             FilePicker(
                 initialDirectory = uiState.lastVisitedDirectory?.let { java.io.File(it) },
                 remoteLibrary = uiState.remoteLibrary,
+                remoteCurrentPath = uiState.remoteCurrentPath,
+                remoteThumbnails = uiState.remoteThumbnails,
+                isScanningRemote = uiState.isScanningRemote,
+                lastScanError = uiState.lastScanError,
+                initialIsRemoteMode = uiState.serverIp != null && uiState.serverIp != "Local Server" && uiState.serverIp != "Searching...",
                 filterType = filePickerMode,
                 onFileSelected = { file ->
                     showFilePicker = false
@@ -234,11 +240,52 @@ fun DashboardScreen(
                     }
                     showQuickEdit = null
                 },
+                onNavigateRemote = { path -> viewModel.fetchRemoteLibrary(path) },
+                onNavigateRemoteBack = { viewModel.navigateRemoteBack() },
+                onRequestRemoteThumbnail = { path -> viewModel.fetchRemoteThumbnail(path) },
                 onDirectoryChanged = { dir ->
                     viewModel.updateLastVisitedDirectory(dir.absolutePath)
                 },
                 onDismissRequest = { showFilePicker = false }
             )
+        }
+
+        // [v1.18.9] Disconnect Confirmation Dialog (CLIENT Mode)
+        if (uiState.showDisconnectDialog) {
+            PremiumDialog(
+                onDismissRequest = { /* No dismiss allowed without action */ },
+                title = "⚠ Conexión Perdida"
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                    Text(
+                        "Se ha perdido la conexión con el servidor del proyector. ¿Qué deseas hacer?",
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                    
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Button(
+                            onClick = { viewModel.confirmDisconnect() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.2f)),
+                            border = BorderStroke(1.dp, Color.Red.copy(alpha = 0.5f))
+                        ) {
+                            Text("DESCONECTAR", color = Color.Red, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                        
+                        Button(
+                            onClick = { viewModel.retryConnection() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color.Cyan.copy(alpha = 0.2f)),
+                            border = BorderStroke(1.dp, Color.Cyan.copy(alpha = 0.5f))
+                        ) {
+                            Text("REINTENTAR", color = Color.Cyan, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         }
 
         // Shader Parameters Dialog
