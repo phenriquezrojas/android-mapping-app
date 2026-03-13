@@ -295,35 +295,44 @@ class MappingNetworkManager(
 
             if (session?.method == Method.POST) {
                 if (uri.startsWith("/upload")) {
+                    println("Upload: Request received [${session.method}] $uri")
                     try {
                         val files = HashMap<String, String>()
                         session.parseBody(files)
                         
                         val parms = session.parms
+                        println("Upload: Parameters found: ${parms.keys}")
+                        println("Upload: Files found in multipart: ${files.keys}")
+                        
                         // [v1.18.21] Prefer filename from Query Param, fallback to Multipart parms
                         val originalName = parms["filename"] ?: "uploaded_asset_${System.currentTimeMillis()}"
                         
                         // [v1.18.21] Robust part detection: Scan all 'files' keys if 'file' part is missing
+                        // Order: "file", "video", "image", "apk", then anything else
                         val tempFilePath = files["file"] ?: files["video"] ?: files["image"] ?: files["apk"] ?: files.values.firstOrNull()
                         
                         if (tempFilePath != null) {
                             val tempFile = File(tempFilePath)
                             // [v1.18.19] Force target to uploads/ subdirectory unless it's an APK
                             val targetDir = if (originalName.endsWith(".apk")) storageDir else File(storageDir, "uploads")
-                            if (!targetDir.exists()) targetDir.mkdirs()
+                            if (!targetDir.exists()) {
+                                println("Upload: Creating directory ${targetDir.absolutePath}")
+                                targetDir.mkdirs()
+                            }
 
                             val targetFile = File(targetDir, originalName)
-                            println("Upload: Saving $originalName to ${targetFile.absolutePath} (Size: ${tempFile.length()})")
+                            println("Upload: Saving '$originalName' to ${targetFile.absolutePath} (Temp: $tempFilePath, Size: ${tempFile.length()})")
                             
                             tempFile.copyTo(targetFile, overwrite = true)
                             cb.onVideoUploaded(originalName, targetFile)
                             return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Upload success: $originalName")
                         } else {
-                            println("Upload error: No file part found in request. Available keys: ${files.keys}")
-                            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No file part found")
+                            println("Upload error: No file part found in request body. Files map: $files")
+                            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No file found (check multipart part names)")
                         }
                     } catch (e: Exception) {
-                        println("Upload critical failure: ${e.message}")
+                        println("Upload CRITICAL failure: ${e.message}")
+                        e.printStackTrace()
                         return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Upload failed: ${e.message}")
                     }
                 } else if (uri.startsWith("/update")) {

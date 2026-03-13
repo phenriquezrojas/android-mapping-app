@@ -172,9 +172,9 @@ class MappingViewModel @Inject constructor(
         .build()
 
     private val mediaClient = OkHttpClient.Builder()
-        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
-        .writeTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
-        .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .connectTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .dispatcher(Dispatcher().apply { maxRequestsPerHost = 2 }) // Limit concurrent thumbnails
         .build()
 
@@ -2295,21 +2295,27 @@ class MappingViewModel @Inject constructor(
 
                 // [v1.18.21] Pass filename via Query Param for maximum reliability with NanoHTTPD
                 val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8")
+                val uploadUrl = "http://$serverIp:8081/upload?filename=$encodedFilename"
+                
+                Log.d("MappingViewModel", "Starting UNIFIED upload to: $uploadUrl")
                 val request = Request.Builder()
-                    .url("http://$serverIp:8081/upload?filename=$encodedFilename")
+                    .url(uploadUrl)
                     .post(requestBody)
                     .build()
 
                 mediaClient.newCall(request).execute().use { response ->
+                    val responseBody = response.body?.string() ?: ""
+                    Log.d("MappingViewModel", "Server Response [${response.code}]: $responseBody")
+                    
                     if (response.isSuccessful) {
-                        Log.d("MappingViewModel", "Asset uploaded successfully: $filename")
+                        Log.i("MappingViewModel", "Asset uploaded successfully: $filename")
                         // The server stores it in 'uploads/' subdirectory
                         val serverPath = "uploads/$filename"
                         withContext(Dispatchers.Main) {
                             onComplete(serverPath)
                         }
                     } else {
-                        throw Exception("Upload failed: ${response.code}")
+                        throw Exception("Upload failed: ${response.code} - $responseBody")
                     }
                 }
             } catch (e: Exception) {
