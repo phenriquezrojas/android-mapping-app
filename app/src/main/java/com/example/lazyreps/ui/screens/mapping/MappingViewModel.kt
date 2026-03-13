@@ -2078,6 +2078,7 @@ class MappingViewModel @Inject constructor(
                 r.updateState(state)
             }
 
+            syncCameraState()
             // 3. Setup players for all surfaces
             // playAllVideos() - Legacy removed. VideoController handles playback on demand. 
         } catch (e: Exception) {
@@ -2784,6 +2785,26 @@ class MappingViewModel @Inject constructor(
             val updatedSurfaces = state.surfaces.map { surface ->
                 if (surface.id == surfaceId) {
                     var newSurface = surface.copy()
+
+                    // [v1.18.16] Ensure VideoController only stops if no other slot needs it
+                    // This logic needs to run BEFORE `shouldClear` determines `newEffect`
+                    if (effect?.sourceType == SourceType.VIDEO || effect?.sourceType == SourceType.MJPEG_CAMERA) {
+                        val needsVideo = state.surfaces.find { it.id == surfaceId }?.let { s ->
+                            val otherSlots = when (slotType) {
+                                EffectSlotType.BACKGROUNDS -> listOf(s.visualsSlot, s.fxSlot)
+                                EffectSlotType.VISUALS -> listOf(s.backgroundsSlot, s.fxSlot)
+                                EffectSlotType.FX -> listOf(s.backgroundsSlot, s.visualsSlot)
+                            }
+                            otherSlots.any { it?.sourceType == SourceType.VIDEO || it?.sourceType == SourceType.MJPEG_CAMERA }
+                        } ?: false
+
+                        if (!needsVideo) {
+                            Log.d("MappingViewModel", "[AUTHORITY] Stopping VideoController for $surfaceId (New Source: ${effect.sourceType})")
+                            viewModelScope.launch(Dispatchers.Main) {
+                                videoController.stop()
+                            }
+                        }
+                    }
                     
                     // Logic to toggle: If current slot content == new effect content, clear it.
                     val currentSlot = when(slotType) {
@@ -2994,6 +3015,7 @@ class MappingViewModel @Inject constructor(
         }
         saveCurrentState()
         
+        syncCameraState()
         // Ensure all clients reflect the clip slot change
         broadcastState()
     }
@@ -3512,6 +3534,8 @@ class MappingViewModel @Inject constructor(
             }
         }
         
+        syncCameraState()
+        syncRenderer()
         saveCurrentState()
     }
 

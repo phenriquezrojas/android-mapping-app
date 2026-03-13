@@ -250,17 +250,22 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
         targetFPS = state.targetFPS
         bpm = state.globalBPM
         
-        // [Phase 5.8] Manage Camera Stream
-        val cameraSurface = state.surfaces.find { it.sourceType == SourceType.MJPEG_CAMERA }
-        if (cameraSurface != null) {
-            val url = cameraSurface.videoPath // Reusing videoPath for URL
-            if (url != null) {
-                // TODO: optimization - check if already running same URL
-                // For now, start() handles restart if needed or we can check inside controller
-                 mjpegController.start(url)
+        // [Phase 5.8] Manage Camera Stream - [v1.18.18] Scan ALL slots
+        var cameraUrl: String? = null
+        state.surfaces.forEach { s ->
+            if (cameraUrl != null) return@forEach
+            if (s.isVisible) {
+                if (s.sourceType == SourceType.MJPEG_CAMERA) cameraUrl = s.videoPath
+                else if (s.backgroundsSlot?.sourceType == SourceType.MJPEG_CAMERA) cameraUrl = s.backgroundsSlot?.content
+                else if (s.visualsSlot?.sourceType == SourceType.MJPEG_CAMERA) cameraUrl = s.visualsSlot?.content
+                else if (s.fxSlot?.sourceType == SourceType.MJPEG_CAMERA) cameraUrl = s.fxSlot?.content
             }
+        }
+
+        if (cameraUrl != null) {
+            mjpegController.start(cameraUrl!!)
         } else {
-             mjpegController.stop()
+            mjpegController.stop()
         }
 
         requestRender?.invoke()
