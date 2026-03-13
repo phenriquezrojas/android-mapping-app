@@ -2291,11 +2291,12 @@ class MappingViewModel @Inject constructor(
                 val requestBody = MultipartBody.Builder()
                     .setType(MultipartBody.FORM)
                     .addFormDataPart("file", filename, progressiveBody) // Standard field
-                    .addFormDataPart("filename", filename)
                     .build()
 
+                // [v1.18.21] Pass filename via Query Param for maximum reliability with NanoHTTPD
+                val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8")
                 val request = Request.Builder()
-                    .url("http://$serverIp:8081/upload")
+                    .url("http://$serverIp:8081/upload?filename=$encodedFilename")
                     .post(requestBody)
                     .build()
 

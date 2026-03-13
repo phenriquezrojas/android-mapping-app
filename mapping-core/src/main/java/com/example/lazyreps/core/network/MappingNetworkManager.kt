@@ -300,8 +300,11 @@ class MappingNetworkManager(
                         session.parseBody(files)
                         
                         val parms = session.parms
-                        val tempFilePath = files["video"] ?: files["image"] ?: files["file"] ?: files["apk"]
+                        // [v1.18.21] Prefer filename from Query Param, fallback to Multipart parms
                         val originalName = parms["filename"] ?: "uploaded_asset_${System.currentTimeMillis()}"
+                        
+                        // [v1.18.21] Robust part detection: Scan all 'files' keys if 'file' part is missing
+                        val tempFilePath = files["file"] ?: files["video"] ?: files["image"] ?: files["apk"] ?: files.values.firstOrNull()
                         
                         if (tempFilePath != null) {
                             val tempFile = File(tempFilePath)
@@ -310,12 +313,17 @@ class MappingNetworkManager(
                             if (!targetDir.exists()) targetDir.mkdirs()
 
                             val targetFile = File(targetDir, originalName)
+                            println("Upload: Saving $originalName to ${targetFile.absolutePath} (Size: ${tempFile.length()})")
+                            
                             tempFile.copyTo(targetFile, overwrite = true)
-                            // Clean up temp file? NanoHTTPD usually handles it but we moved it.
                             cb.onVideoUploaded(originalName, targetFile)
-                            return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Upload success")
+                            return newFixedLengthResponse(Response.Status.OK, MIME_PLAINTEXT, "Upload success: $originalName")
+                        } else {
+                            println("Upload error: No file part found in request. Available keys: ${files.keys}")
+                            return newFixedLengthResponse(Response.Status.BAD_REQUEST, MIME_PLAINTEXT, "No file part found")
                         }
                     } catch (e: Exception) {
+                        println("Upload critical failure: ${e.message}")
                         return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, MIME_PLAINTEXT, "Upload failed: ${e.message}")
                     }
                 } else if (uri.startsWith("/update")) {

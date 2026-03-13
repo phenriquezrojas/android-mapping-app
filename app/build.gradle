@@ -13,8 +13,8 @@ android {
         applicationId "com.example.lazyreps"
         minSdk 24
         targetSdk 34
-        versionCode 120
-        versionName "1.18.20"
+        versionCode 121
+        versionName "1.18.21"
         multiDexEnabled true
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
