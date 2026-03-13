@@ -42,10 +42,10 @@ class MappingApplication : Application() {
                     throwable.printStackTrace(java.io.PrintWriter(writer))
                 }
 
-                // Public log (Download folder) - No permission request here, so it might fail if not granted
-                // But Nebula is likely old and we added the permit to Manifest
-                val publicDownloadDir = java.io.File("/storage/emulated/0/Download")
-                if (publicDownloadDir.exists()) {
+                // Public log (Download folder) - Use safe external directory
+                val publicDownloadDir = getExternalFilesDir(android.os.Environment.DIRECTORY_DOWNLOADS)
+                if (publicDownloadDir != null) {
+                    if (!publicDownloadDir.exists()) publicDownloadDir.mkdirs()
                     val publicCrashFile = java.io.File(publicDownloadDir, "mapping_last_crash.log")
                     java.io.FileWriter(publicCrashFile).use { writer ->
                         writer.write("FATAL ERROR REPORT\n")
@@ -54,7 +54,7 @@ class MappingApplication : Application() {
                         throwable.printStackTrace(java.io.PrintWriter(writer))
                     }
                 }
-                android.util.Log.i("MappingCrashCatch", "Crash log saved to internal and public storage")
+                android.util.Log.i("MappingCrashCatch", "Crash log saved to internal and external storage")
             } catch (e: Exception) {
                 android.util.Log.e("MappingCrashCatch", "Failed to write crash log: ${e.message}")
             }

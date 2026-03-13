@@ -92,20 +92,28 @@ class MappingNetworkManager(
     // --- Common ---
 
     fun sendCommand(command: MappingCommand) {
-        val json = command.toJSONObject().toString()
-        if (server != null) {
-            server?.broadcast(json)
-        } else if (client != null && client?.isOpen == true) {
-            client?.send(json)
+        try {
+            val json = command.toJSONObject().toString()
+            if (server != null) {
+                server?.broadcast(json)
+            } else if (client != null && client?.isOpen == true) {
+                client?.send(json)
+            }
+        } catch (e: Exception) {
+            println("Error sending command: ${e.message}")
         }
     }
     
     fun sendState(state: MappingState) {
-        val json = state.toJSON()
-        if (server != null) {
-            server?.broadcast(json)
+        try {
+            val json = state.toJSON()
+            if (server != null) {
+                server?.broadcast(json)
+            }
+            // Clients typically don't send full state to server, but they could sending specific commands
+        } catch (e: Exception) {
+            println("Error sending state: ${e.message}")
         }
-        // Clients typically don't send full state to server, but they could sending specific commands
     }
 
     fun stopAll() {

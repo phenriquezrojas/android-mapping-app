@@ -2281,7 +2281,9 @@ class MappingViewModel @Inject constructor(
                                 if (r == -1L) break
                                 sink.write(buffer, r)
                                 totalRead += r
-                                val progress = totalRead.toFloat() / totalLength
+                                val progress = if (totalLength > 0) {
+                                    (totalRead.toFloat() / totalLength).let { if (it.isNaN()) 0f else it.coerceIn(0f, 1f) }
+                                } else 1f
                                 _uiState.update { it.copy(updateProgress = progress) }
                             }
                         }
