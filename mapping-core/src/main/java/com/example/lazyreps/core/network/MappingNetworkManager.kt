@@ -308,8 +308,8 @@ class MappingNetworkManager(
                         val originalName = parms["filename"] ?: "uploaded_asset_${System.currentTimeMillis()}"
                         
                         // [v1.18.21] Robust part detection: Scan all 'files' keys if 'file' part is missing
-                        // Order: "file", "video", "image", "apk", then anything else
-                        val tempFilePath = files["file"] ?: files["video"] ?: files["image"] ?: files["apk"] ?: files.values.firstOrNull()
+                        // Order: "postData" (Raw POST), "file", "video", "image", "apk", then anything else
+                        val tempFilePath = files["postData"] ?: files["file"] ?: files["video"] ?: files["image"] ?: files["apk"] ?: files.values.firstOrNull()
                         
                         if (tempFilePath != null) {
                             val tempFile = File(tempFilePath)

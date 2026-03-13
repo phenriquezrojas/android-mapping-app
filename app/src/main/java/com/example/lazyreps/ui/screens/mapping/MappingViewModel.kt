@@ -2268,9 +2268,9 @@ class MappingViewModel @Inject constructor(
                 // For now, we push to ensure freshness.
 
                 // 3. Upload
-                val fileBody = localFile.asRequestBody(null) // Let server detect mime
+                // 3. Raw POST Upload (Bypass NanoHTTPD Multipart parsing bugs)
                 val progressiveBody = object : RequestBody() {
-                    override fun contentType() = fileBody.contentType()
+                    override fun contentType() = "application/octet-stream".toMediaTypeOrNull()
                     override fun contentLength() = totalLength
                     override fun writeTo(sink: okio.BufferedSink) {
                         localFile.source().use { source ->
@@ -2288,19 +2288,14 @@ class MappingViewModel @Inject constructor(
                     }
                 }
 
-                val requestBody = MultipartBody.Builder()
-                    .setType(MultipartBody.FORM)
-                    .addFormDataPart("file", filename, progressiveBody) // Standard field
-                    .build()
-
                 // [v1.18.21] Pass filename via Query Param for maximum reliability with NanoHTTPD
                 val encodedFilename = java.net.URLEncoder.encode(filename, "UTF-8")
                 val uploadUrl = "http://$serverIp:8081/upload?filename=$encodedFilename"
                 
-                Log.d("MappingViewModel", "Starting UNIFIED upload to: $uploadUrl")
+                Log.d("MappingViewModel", "Starting UNIFIED RAW upload to: $uploadUrl (Size: $totalLength)")
                 val request = Request.Builder()
                     .url(uploadUrl)
-                    .post(requestBody)
+                    .post(progressiveBody)
                     .build()
 
                 mediaClient.newCall(request).execute().use { response ->
