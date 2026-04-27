@@ -299,8 +299,8 @@ fun DashboardScreen(
                 val params = clip.shaderParameters
                 val availableInfo = viewModel.shaderRegistry[shaderId] ?: emptyList()
                 
-                val isNeon = shaderId == "shader_neon_text"
-                val textValue = if (isNeon) clip.shaderText ?: "NEON" else null
+                val supportsText = shaderId == "shader_neon_text" || shaderId == "GraffitiMask"
+                val textValue = if (supportsText) clip.shaderText ?: "GRAFFITI" else null
                 
                 ShaderControlsDialog(
                     clipName = clip.name,
@@ -1013,7 +1013,7 @@ fun ShaderControlsDialog(
         ) {
             // [v1.9.0] Neon Text Input
             if (currentText != null) {
-                Text("TEXTO NEON", color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
+                Text("TEXTO / TAG", color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
                 OutlinedTextField(
                     value = currentText,
                     onValueChange = onTextChange,
@@ -1041,7 +1041,18 @@ fun ShaderControlsDialog(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
-                            Text(param, color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
+                            val displayName = when (param) {
+                                "u_Scale" -> "Escala / Zoom"
+                                "u_Speed" -> "Velocidad de Movimiento"
+                                "u_Height" -> "Altura de Bloques"
+                                "u_Complexity" -> "Detalle Urbano"
+                                "u_ColorR" -> "Tinte Rojo"
+                                "u_ColorG" -> "Tinte Verde"
+                                "u_ColorB" -> "Tinte Azul"
+                                "u_intensity" -> "Intensidad"
+                                else -> param.replace("u_", "")
+                            }
+                            Text(displayName, color = Color.White.copy(alpha = 0.7f), style = MaterialTheme.typography.bodySmall)
                             Text(String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.bodySmall)
                         }
                         Slider(

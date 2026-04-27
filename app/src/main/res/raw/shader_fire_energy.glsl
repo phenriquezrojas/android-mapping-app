@@ -21,10 +21,15 @@ float noise(vec2 p) {
 }
 
 void main() {
-    float flicker = sin(u_time * 15.0) * 0.1 * u_flicker;
+    // [v1.18.38] Circular Loop Sync: Quantize speeds to fit 60s period
+    float flicker = sin(u_time * 14.9749) * 0.1 * u_flicker; // (143 * 2PI) / 60
     float scale = 2.0 + u_scale * 8.0;
     vec2 uv = vec2(v_TexCoord.x * scale, (1.0 - v_TexCoord.y) * scale);
-    uv.y -= u_time * (u_flow * 2.0 + 1.0);
+    
+    // Sync upward flow: ensure total displacement is an integer every 60s
+    float baseFlow = (u_flow * 2.0 + 1.0);
+    float syncFlow = floor(baseFlow * 60.0) / 60.0;
+    uv.y -= u_time * syncFlow;
     
     float n1 = noise(uv); 
     float n2 = noise(uv * 2.0 + n1); 

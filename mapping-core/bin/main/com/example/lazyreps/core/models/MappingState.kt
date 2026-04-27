@@ -14,7 +14,9 @@ data class MappingState(
     val screenHeight: Float = 0f,
     val isFullScreen: Boolean = false,
     val decks: List<MappingDeck> = emptyList(),
-    val activeDeckIndex: Int = 0
+    val activeDeckIndex: Int = 0,
+    val targetFPS: Int = 24,
+    val globalBPM: Float = 120f
 ) {
     fun toJSON(): String {
         val obj = JSONObject().apply {
@@ -28,6 +30,7 @@ data class MappingState(
                     put("videoPath", surface.videoPath)
                     put("sourceType", surface.sourceType.name)
                     put("shaderId", surface.shaderId)
+                    if (surface.shaderText != null) put("shaderText", surface.shaderText)
                     
                     val paramsObj = JSONObject()
                     surface.shaderParameters.forEach { (name, value) ->
@@ -39,12 +42,17 @@ data class MappingState(
                     put("name", surface.name)
                     put("opacity", surface.opacity.toDouble())
                     put("isVisible", surface.isVisible)
+                    put("isNegative", surface.isNegative)
                     put("rotation", surface.rotation.toDouble())
                     put("flipHorizontal", surface.flipHorizontal)
                     put("flipVertical", surface.flipVertical)
                     put("isPlaying", surface.isPlaying)
                     put("playbackSpeed", surface.playbackSpeed.toDouble())
                     put("imagePath", surface.imagePath)
+                    
+                    val mediaParamsObj = JSONObject()
+                    surface.mediaParams.forEach { (k, v) -> mediaParamsObj.put(k, v) }
+                    put("mediaParams", mediaParamsObj)
                     
                     val cornersArray = JSONArray()
                     surface.corners.forEach { cornersArray.put(it.toDouble()) }
@@ -53,6 +61,49 @@ data class MappingState(
                     val texArray = JSONArray()
                     surface.texCoords.forEach { texArray.put(it.toDouble()) }
                     put("texCoords", texArray)
+                    
+                    val holesArray = JSONArray()
+                    surface.holes.forEach { hole ->
+                        val hArray = JSONArray()
+                        hole.forEach { hArray.put(it.toDouble()) }
+                        holesArray.put(hArray)
+                    }
+                    put("holes", holesArray)
+                    
+                    // Multi-layer slots serialization
+                    surface.backgroundsSlot?.let { slot ->
+                        put("backgroundsSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            put("opacity", slot.opacity.toDouble())
+                            if (slot.shaderText != null) put("shaderText", slot.shaderText)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
+                    surface.visualsSlot?.let { slot ->
+                        put("visualsSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            put("opacity", slot.opacity.toDouble())
+                            if (slot.shaderText != null) put("shaderText", slot.shaderText)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
+                    surface.fxSlot?.let { slot ->
+                        put("fxSlot", JSONObject().apply {
+                            put("sourceType", slot.sourceType.name)
+                            put("content", slot.content)
+                            put("opacity", slot.opacity.toDouble())
+                            if (slot.shaderText != null) put("shaderText", slot.shaderText)
+                            val slotParams = JSONObject()
+                            slot.shaderParameters.forEach { (k, v) -> slotParams.put(k, v.toDouble()) }
+                            put("shaderParameters", slotParams)
+                        })
+                    }
                 }
                 surfacesArray.put(sObj)
             }
@@ -80,10 +131,15 @@ data class MappingState(
                                     put("name", clip.name)
                                     put("sourceType", clip.sourceType.name)
                                     put("path", clip.path)
+                                    if (clip.shaderText != null) put("shaderText", clip.shaderText)
                                     val cParamsObj = JSONObject()
                                     clip.shaderParameters.forEach { (k, v) -> cParamsObj.put(k, v.toDouble()) }
                                     put("shaderParameters", cParamsObj)
                                     put("thumbnailPath", clip.thumbnailPath)
+                                    
+                                    val cMediaParamsObj = JSONObject()
+                                    clip.mediaParams.forEach { (k, v) -> cMediaParamsObj.put(k, v) }
+                                    put("mediaParams", cMediaParamsObj)
                                 }
                                 clipsArray.put(cObj)
                             }
@@ -96,6 +152,8 @@ data class MappingState(
             }
             put("decks", decksArray)
             put("activeDeckIndex", activeDeckIndex)
+            put("targetFPS", targetFPS)
+            put("globalBPM", globalBPM.toDouble())
         }
         return obj.toString()
     }
@@ -120,6 +178,7 @@ data class MappingState(
                     val sourceTypeStr = sObj.optString("sourceType", SourceType.VIDEO.name)
                     val sourceType = SourceType.valueOf(sourceTypeStr)
                     val shaderId = sObj.optString("shaderId", null)
+                    val shaderText = sObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it }
                     
                     val params = mutableMapOf<String, Float>()
                     if (sObj.has("shaderParameters")) {
@@ -136,6 +195,7 @@ data class MappingState(
                     val rotation = sObj.optDouble("rotation", 0.0).toFloat()
                     val flipHorizontal = sObj.optBoolean("flipHorizontal", false)
                     val flipVertical = sObj.optBoolean("flipVertical", false)
+                    val isNegative = sObj.optBoolean("isNegative", false)
                     val isPlaying = sObj.optBoolean("isPlaying", true)
                     val playbackSpeed = sObj.optDouble("playbackSpeed", 1.0).toFloat()
                     val imagePath = sObj.optString("imagePath", null).let { if (it == "null" || it.isNullOrEmpty()) null else it }
@@ -145,12 +205,79 @@ data class MappingState(
                     
                     val texArr = sObj.getJSONArray("texCoords")
                     val texCoords = FloatArray(texArr.length()) { texArr.getDouble(it).toFloat() }
+
+                    val holes = mutableListOf<FloatArray>()
+                    if (sObj.has("holes")) {
+                        val hArr = sObj.getJSONArray("holes")
+                        for (hIdx in 0 until hArr.length()) {
+                            val innerArr = hArr.getJSONArray(hIdx)
+                            val hole = FloatArray(innerArr.length()) { innerArr.getDouble(it).toFloat() }
+                            holes.add(hole)
+                        }
+                    }
+                    
+                    val mediaParams = mutableMapOf<String, String>()
+                    if (sObj.has("mediaParams")) {
+                        val mpObj = sObj.getJSONObject("mediaParams")
+                        mpObj.keys().forEach { k -> mediaParams[k] = mpObj.getString(k) }
+                    }
+                    
+                    // Multi-layer slots deserialization (backward compatible)
+                    val backgroundsSlot = if (sObj.has("backgroundsSlot")) {
+                        val slotObj = sObj.getJSONObject("backgroundsSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            opacity = slotObj.optDouble("opacity", 1.0).toFloat(),
+                            shaderText = slotObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it },
+                            shaderParameters = slotParams
+                        )
+
+                    } else null
+                    
+                    val visualsSlot = if (sObj.has("visualsSlot")) {
+                        val slotObj = sObj.getJSONObject("visualsSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            opacity = slotObj.optDouble("opacity", 1.0).toFloat(),
+                            shaderText = slotObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it },
+                            shaderParameters = slotParams
+                        )
+                    } else null
+                    
+                    val fxSlot = if (sObj.has("fxSlot")) {
+                        val slotObj = sObj.getJSONObject("fxSlot")
+                        val slotParams = mutableMapOf<String, Float>()
+                        if (slotObj.has("shaderParameters")) {
+                            val slotPObj = slotObj.getJSONObject("shaderParameters")
+                            slotPObj.keys().forEach { k -> slotParams[k] = slotPObj.getDouble(k).toFloat() }
+                        }
+                        EffectSlot(
+                            sourceType = SourceType.valueOf(slotObj.getString("sourceType")),
+                            content = slotObj.getString("content"),
+                            opacity = slotObj.optDouble("opacity", 1.0).toFloat(),
+                            shaderText = slotObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it },
+                            shaderParameters = slotParams
+                        )
+                    } else null
                     
                     surfaces.add(MappingSurface(
                         id = id,
                         videoPath = cleanVideoPath,
                         sourceType = sourceType,
                         shaderId = shaderId,
+                        shaderText = shaderText,
                         shaderParameters = params,
                         isBlack = isBlack,
                         name = name,
@@ -163,7 +290,13 @@ data class MappingState(
                         playbackSpeed = playbackSpeed,
                         imagePath = imagePath,
                         corners = corners,
-                        texCoords = texCoords
+                        texCoords = texCoords,
+                        backgroundsSlot = backgroundsSlot,
+                        visualsSlot = visualsSlot,
+                        fxSlot = fxSlot,
+                        isNegative = isNegative,
+                        mediaParams = mediaParams,
+                        holes = holes
                     ))
                 }
                 
@@ -196,13 +329,20 @@ data class MappingState(
                                             val cPObj = cObj.getJSONObject("shaderParameters")
                                             cPObj.keys().forEach { k -> cParams[k] = cPObj.getDouble(k).toFloat() }
                                         }
+                                        val cMediaParams = mutableMapOf<String, String>()
+                                        if (cObj.has("mediaParams")) {
+                                            val cMPObj = cObj.getJSONObject("mediaParams")
+                                            cMPObj.keys().forEach { k -> cMediaParams[k] = cMPObj.getString(k) }
+                                        }
                                         clipsList.add(MappingClip(
                                             id = cObj.getString("id"),
                                             name = cObj.getString("name"),
                                             sourceType = SourceType.valueOf(cObj.getString("sourceType")),
                                             path = cObj.optString("path", null),
+                                            shaderText = cObj.optString("shaderText", null).let { if (it == "null" || it.isNullOrEmpty()) null else it },
                                             shaderParameters = cParams,
-                                            thumbnailPath = cObj.optString("thumbnailPath", null)
+                                            thumbnailPath = cObj.optString("thumbnailPath", null),
+                                            mediaParams = cMediaParams
                                         ))
                                     }
                                 }
@@ -213,8 +353,10 @@ data class MappingState(
                     }
                 }
                 val activeDeckIndex = obj.optInt("activeDeckIndex", 0)
+                val targetFPS = obj.optInt("targetFPS", 24)
+                val globalBPM = obj.optDouble("globalBPM", 120.0).toFloat()
                 
-                MappingState(mode, surfaces, screenWidth, screenHeight, isFullScreen, decks, activeDeckIndex)
+                MappingState(mode, surfaces, screenWidth, screenHeight, isFullScreen, decks, activeDeckIndex, targetFPS, globalBPM)
             } catch (e: Exception) {
                 e.printStackTrace()
                 null

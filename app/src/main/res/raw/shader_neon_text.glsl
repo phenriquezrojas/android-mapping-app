@@ -1,4 +1,4 @@
-precision mediump float;
+precision highp float;
 varying vec2 v_TexCoord;
 uniform sampler2D u_Texture; // The Text Bitmap
 uniform float u_time;
@@ -10,9 +10,9 @@ uniform float u_opacity;
 uniform float u_Scale; // e.g. 0.5 to 2.0
 
 void main() {
-    // [v1.9.1] Water Effect: Distort UVs before sampling
-    float rippleIntensity = 0.05; // Force of the ripple
-    float rippleSpeed = 4.0;
+    // [v1.18.37] Seamless Sync: Speeds quantized to fit 60s period
+    float rippleIntensity = 0.05; 
+    float rippleSpeed = 3.97935; // (38 * 2PI) / 60
     
     vec2 distortedUV = v_TexCoord;
     distortedUV.x += sin(v_TexCoord.y * 15.0 + u_time * rippleSpeed) * rippleIntensity;
@@ -37,8 +37,8 @@ void main() {
         neonColor = vec3(u_ColorR, u_ColorG, u_ColorB);
     }
     
-    // Pulse effect
-    float pulse = 0.9 + 0.1 * sin(u_time * 3.0);
+    // Pulse effect (Synced: (29 * 2PI) / 60)
+    float pulse = 0.9 + 0.1 * sin(u_time * 3.03687);
     
     // Final color with transparency and HUGE Intensity boost (u_Intensity * 5.0)
     gl_FragColor = vec4(neonColor * (u_Intensity * 5.0) * pulse, texColor.a * u_opacity);

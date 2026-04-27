@@ -408,31 +408,16 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
         deferredQueue.clear()
         
         // Mapeamos los recursos pero NO los cargamos automáticamente
-        shaderResourceMap["MagicRoots"] = R.raw.shader_organic_noise
         shaderResourceMap["FireEnergy"] = R.raw.shader_fire_energy
-        shaderResourceMap["LeafStorm"] = R.raw.shader_pulse_wave
-        shaderResourceMap["PulseWave"] = R.raw.shader_pulse_wave
+        shaderResourceMap["GraffitiMask"] = R.raw.shader_graffiti_mask
         shaderResourceMap["BPM_Debug"] = R.raw.shader_bpm_debug
-        shaderResourceMap["MysticFlora"] = R.raw.shader_aura_field
         shaderResourceMap["CosmicPollen"] = R.raw.shader_particle_mist
         shaderResourceMap["FriendshipAura"] = R.raw.shader_dissolve_ritual
-        shaderResourceMap["Fireworks"] = R.raw.shader_color_wash
         shaderResourceMap["AncientPine"] = R.raw.shader_ancient_pine
         shaderResourceMap["WatcherEyes"] = R.raw.shader_watcher_eyes
-        shaderResourceMap["MysticLiquid"] = R.raw.shader_mystic_liquid
-        shaderResourceMap["PlasmaWaves"] = R.raw.plasma_waves
-        shaderResourceMap["VoronoiCells"] = R.raw.voronoi_cells
-        shaderResourceMap["FractalZoom"] = R.raw.fractal_zoom
-        shaderResourceMap["LiquidMetal"] = R.raw.liquid_metal
-        shaderResourceMap["NeonGrid"] = R.raw.neon_grid
-        shaderResourceMap["StarField"] = R.raw.star_field
-        shaderResourceMap["Kaleidoscope"] = R.raw.kaleidoscope
-        shaderResourceMap["WaterRipples"] = R.raw.water_ripples
-        shaderResourceMap["AuroraFlow"] = R.raw.aurora_flow
-        shaderResourceMap["GeometricPulse"] = R.raw.geometric_pulse
         shaderResourceMap["shader_neon_text"] = R.raw.shader_neon_text
-        shaderResourceMap["neon_bounce"] = R.raw.shader_neon_bounce
         shaderResourceMap["Arcoiris"] = R.raw.shader_arcoiris
+        shaderResourceMap["AsciiTunnel"] = R.raw.shader_ascii_tunnel
         
         Log.d("MappingRenderer", "Shader resource map initialized with ${shaderResourceMap.size} shaders. Lazy loading enabled.")
     }
@@ -984,7 +969,8 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
             GLES20.glUseProgram(pId)
             
             // [v1.9.0] Text Shader Logic
-            if (shaderId == "shader_neon_text") {
+            // [v1.18.41] Multi-Text Shader Logic
+            if (shaderId == "shader_neon_text" || shaderId == "GraffitiMask") {
                  val text = slot.shaderText ?: "NEON"
                  val texId = updateTextTexture(surface.id, text)
                  GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
@@ -993,7 +979,10 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
                  if (uTex != -1) GLES20.glUniform1i(uTex, 0)
             }
             
-            val time = (SystemClock.elapsedRealtime() - startTime) / 1000f
+            // [v1.18.37] Circular Clock: Wrap time every 60s to maintain high floating point precision
+            val rawTime = (SystemClock.elapsedRealtime() - startTime) / 1000f
+            val time = rawTime % 60.0f 
+            
             val uTime = getUniLoc(pId, "u_time"); if(uTime!=-1) GLES20.glUniform1f(uTime, time)
             val uRes = getUniLoc(pId, "u_resolution"); if(uRes!=-1) GLES20.glUniform2f(uRes, screenWidth, screenHeight)
             val uOp = getUniLoc(pId, "u_opacity"); if(uOp!=-1) GLES20.glUniform1f(uOp, opacity)

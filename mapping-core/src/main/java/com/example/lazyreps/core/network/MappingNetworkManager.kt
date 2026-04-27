@@ -292,9 +292,28 @@ class MappingNetworkManager(
                     if (!filePath.contains("..")) { // Basic path traversal check
                         val file = File(storageDir, filePath)
                         if (file.exists()) {
-                            // NanoHTTPD's serveFile handles Range headers for streaming
                             val mime = if (uri.endsWith(".mp4")) "video/mp4" else "application/octet-stream"
-                            return newFixedLengthResponse(Response.Status.OK, mime, java.io.FileInputStream(file), file.length())
+                            val rangeHeader = session?.headers?.get("range")
+                            if (rangeHeader != null && rangeHeader.startsWith("bytes=")) {
+                                val rangeParams = rangeHeader.substring(6).split("-")
+                                val startFrom = rangeParams[0].toLongOrNull() ?: 0L
+                                val endAt = if (rangeParams.size > 1 && rangeParams[1].isNotEmpty()) {
+                                    rangeParams[1].toLongOrNull() ?: (file.length() - 1)
+                                } else {
+                                    file.length() - 1
+                                }
+                                val dataLen = endAt - startFrom + 1
+                                val fis = java.io.FileInputStream(file)
+                                fis.skip(startFrom)
+                                val response = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, fis, dataLen)
+                                response.addHeader("Accept-Ranges", "bytes")
+                                response.addHeader("Content-Range", "bytes $startFrom-$endAt/${file.length()}")
+                                return response
+                            } else {
+                                val response = newFixedLengthResponse(Response.Status.OK, mime, java.io.FileInputStream(file), file.length())
+                                response.addHeader("Accept-Ranges", "bytes")
+                                return response
+                            }
                         }
                     }
                     return newFixedLengthResponse(Response.Status.NOT_FOUND, MIME_PLAINTEXT, "File not found")

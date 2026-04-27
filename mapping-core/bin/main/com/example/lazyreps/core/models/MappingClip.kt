@@ -12,5 +12,7 @@ data class MappingClip(
     val sourceType: SourceType,
     val path: String? = null, // Path del video, path de la imagen o shaderId
     val shaderParameters: Map<String, Float> = emptyMap(),
-    val thumbnailPath: String? = null
+    val thumbnailPath: String? = null,
+    val shaderText: String? = null, // [v1.9.0]
+    val mediaParams: Map<String, String> = emptyMap() // [v1.11.0] Camera FX params
 )

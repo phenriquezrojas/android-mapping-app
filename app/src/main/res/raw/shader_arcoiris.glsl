@@ -81,7 +81,9 @@ void main( void ) {
 
     vec3 ch_color = hsv2rgb_smooth(vec3(u_time*0.4+uv.y*0.1,0.5,1.0));
     vec3 bg_color = vec3(_d*0.4, _d*0.2, _d*0.1);
-    uv.x += 0.5+sin(u_time+uv.y*0.7)*0.5;
+    
+    // [Seamless Sync] Speed fixed to 1.04719 to match 60s cycle (k=10)
+    uv.x += 0.5+sin(u_time*1.0471975 + uv.y*0.7)*0.5;
     
     ch_pos = ch_start;
 

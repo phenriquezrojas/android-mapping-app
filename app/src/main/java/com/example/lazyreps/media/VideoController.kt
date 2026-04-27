@@ -2,8 +2,6 @@ package com.example.lazyreps.media
 
 import android.content.Context
 import android.net.Uri
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import android.view.Surface
 import androidx.media3.common.MediaItem
@@ -21,126 +19,137 @@ import javax.inject.Singleton
 class VideoController @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
-    // Single player instance for Nebula optimization
-    private var exoPlayer: ExoPlayer? = null
-    
-    // We track the currently active surface ID to prevent conflicts
-    var activeSurfaceId: String? = null
-        private set
+    // [Pool] One ExoPlayer per active surfaceId — supports simultaneous multi-layer video
+    private val playerPool = mutableMapOf<String, ExoPlayer>()
+
+    // Backward-compat: exposes the last active surface ID (used in legacy guards).
+    // With pool, prefer isActive(surfaceId) for precise per-surface checks.
+    val activeSurfaceId: String? get() = playerPool.keys.lastOrNull()
+
+    /** Returns the set of all surfaceIds currently with an active player. */
+    val activeSurfaceIds: Set<String> get() = playerPool.keys.toSet()
 
     private val _errorState = MutableStateFlow<String?>(null)
     val errorState: StateFlow<String?> = _errorState.asStateFlow()
 
-    init {
-        initializePlayer()
-    }
+    /** Returns true if a player is currently active for the given surfaceId. */
+    fun isActive(surfaceId: String): Boolean = surfaceId in playerPool
 
-    private fun initializePlayer() {
-        if (exoPlayer == null) {
-            exoPlayer = ExoPlayer.Builder(context).build().apply {
+    private fun getOrCreatePlayer(surfaceId: String): ExoPlayer {
+        return playerPool.getOrPut(surfaceId) {
+            ExoPlayer.Builder(context).build().apply {
                 repeatMode = Player.REPEAT_MODE_ONE
                 playWhenReady = true
                 addListener(object : Player.Listener {
                     override fun onPlayerError(error: PlaybackException) {
-                        Log.e("VideoController", "Player Error: ${error.message}", error)
+                        Log.e("VideoController", "Player Error ($surfaceId): ${error.message}", error)
                         _errorState.value = "Playback Error: ${error.message}"
-                        // Simple auto-retry logic could go here
                     }
                 })
-            }
-            Log.d("VideoController", "ExoPlayer initialized")
+            }.also { Log.d("VideoController", "ExoPlayer created for $surfaceId") }
         }
     }
 
     /**
-     * Starts streaming/playing from a URL or file path.
-     * @param url The http/rtsp URL or local file path
-     * @param surfaceId The ID of the surface this video belongs to (for tracking)
+     * Starts streaming/playing from a URL or file path for the given surface.
+     * Each surfaceId gets its own independent ExoPlayer instance.
      */
     fun start(url: String, surfaceId: String) {
-        if (activeSurfaceId != null && activeSurfaceId != surfaceId) {
-            Log.w("VideoController", "Switching video source from $activeSurfaceId to $surfaceId")
-        }
-        
-        initializePlayer()
-        
         try {
-            val player = exoPlayer ?: return
-            
             // [Fix v1.18.6] Guard: Prevent ExoPlayer crash if a Client attempts to play a Server path
             if (url.startsWith("/") && !java.io.File(url).exists()) {
                 Log.w("VideoController", "Skipping playback: file does not exist locally: $url")
                 return
             }
-            
-            // Build MediaItem
+
+            val player = getOrCreatePlayer(surfaceId)
             val mediaItem = MediaItem.fromUri(Uri.parse(url))
-            
             player.setMediaItem(mediaItem)
             player.prepare()
             player.play()
-            
-            activeSurfaceId = surfaceId
             Log.d("VideoController", "Started playback for $surfaceId: $url")
-            
+
         } catch (e: Exception) {
-            Log.e("VideoController", "Failed to start playback", e)
+            Log.e("VideoController", "Failed to start playback for $surfaceId", e)
             _errorState.value = "Start Error: ${e.message}"
         }
     }
-    
+
     /**
-     * Attaches the player to a surface for rendering.
+     * Attaches the player for [surfaceId] to the given GL Surface.
      * This is critical for OpenGL integration.
      */
-    fun attachSurface(surface: Surface) {
-        val player = exoPlayer
+    fun attachSurface(surface: Surface, surfaceId: String) {
+        val player = playerPool[surfaceId]
         if (player != null) {
             player.setVideoSurface(surface)
-            Log.d("VideoController", "Surface attached to player")
+            Log.d("VideoController", "Surface attached for $surfaceId")
         } else {
-            Log.w("VideoController", "Attempted to attach surface to null player")
+            Log.w("VideoController", "attachSurface: no player found for $surfaceId")
         }
     }
 
     /**
-     * Detaches the current surface. call when GL surface is destroyed
+     * Detaches the surface from the player for [surfaceId].
+     * Call when the GL surface for that layer is destroyed.
      */
-    fun detachSurface() {
-        exoPlayer?.clearVideoSurface()
-        Log.d("VideoController", "Surface detached from player")
+    fun detachSurface(surfaceId: String) {
+        playerPool[surfaceId]?.clearVideoSurface()
+        Log.d("VideoController", "Surface detached for $surfaceId")
     }
 
-    fun stop() {
-        exoPlayer?.stop()
-        activeSurfaceId = null
-        Log.d("VideoController", "Playback stopped")
+    /**
+     * Detaches all surfaces. Call when the GLSurfaceView is destroyed.
+     */
+    fun detachSurface() {
+        playerPool.values.forEach { it.clearVideoSurface() }
+        Log.d("VideoController", "All surfaces detached")
+    }
+
+    /**
+     * Stops and releases the player for [surfaceId].
+     */
+    fun stop(surfaceId: String) {
+        playerPool.remove(surfaceId)?.let { player ->
+            player.stop()
+            player.release()
+            Log.d("VideoController", "Stopped and released player for $surfaceId")
+        }
+    }
+
+    /**
+     * Stops and releases ALL active players. Use for clearAll / loadProject / release.
+     */
+    fun stopAll() {
+        val ids = playerPool.keys.toList()
+        ids.forEach { stop(it) }
+        Log.d("VideoController", "All players stopped")
     }
 
     fun pause() {
-        exoPlayer?.pause()
-        Log.d("VideoController", "Playback paused")
+        playerPool.values.forEach { it.pause() }
+        Log.d("VideoController", "All players paused")
     }
 
     fun play() {
-        if (exoPlayer?.playbackState == Player.STATE_IDLE) {
-            exoPlayer?.prepare()
+        playerPool.values.forEach { player ->
+            if (player.playbackState == Player.STATE_IDLE) player.prepare()
+            player.play()
         }
-        exoPlayer?.play()
-        Log.d("VideoController", "Playback resumed")
+        Log.d("VideoController", "All players resumed")
     }
 
     fun release() {
-        exoPlayer?.release()
-        exoPlayer = null
-        activeSurfaceId = null
-        Log.d("VideoController", "Player released")
+        playerPool.values.forEach { it.release() }
+        playerPool.clear()
+        Log.d("VideoController", "All players released")
     }
-    fun setPlaybackSpeed(speed: Float) {
-        exoPlayer?.setPlaybackSpeed(speed)
+
+    fun setPlaybackSpeed(surfaceId: String, speed: Float) {
+        playerPool[surfaceId]?.setPlaybackSpeed(speed)
     }
 
     fun isPlaying(): Boolean {
-        return exoPlayer?.isPlaying == true
+        return playerPool.values.any { it.isPlaying }
     }
 }

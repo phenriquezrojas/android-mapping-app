@@ -186,33 +186,17 @@ class MappingViewModel @Inject constructor(
     private val MAX_HISTORY = 50
 
     val shaderRegistry = mapOf(
-        "MagicRoots" to listOf("u_speed", "u_scale", "u_complexity"),
         "FireEnergy" to listOf("u_intensity", "u_flicker", "u_flow", "u_scale"),
-        "LeafStorm" to listOf("u_speed", "u_scale", "u_energy"),
-        "MysticFlora" to listOf("u_flow", "u_scale"),
+        "GraffitiMask" to listOf("u_Scale", "u_Intensity", "u_Speed"),
         "CosmicPollen" to listOf("u_density", "u_scale", "u_flow"),
         "FriendshipAura" to listOf("u_progress", "u_edgeSoftness", "u_scale"),
-        "Fireworks" to listOf("u_speed", "u_scale"),
         "AncientPine" to listOf("u_intensity", "u_scale"),
         "WatcherEyes" to listOf("u_speed", "u_intensity"),
-        "MysticLiquid" to listOf("u_progress", "u_speed", "u_intensity"),
         
-        // Phase 2 Shaders
-        "PlasmaWaves" to listOf("u_speed", "u_scale", "u_intensity"),
-        "VoronoiCells" to listOf("u_speed", "u_scale", "u_jitter"),
-        "FractalZoom" to listOf("u_zoom", "u_speed", "u_iterations"),
-        "LiquidMetal" to listOf("u_speed", "u_viscosity", "u_reflection"),
-        "NeonGrid" to listOf("u_size", "u_speed", "u_glow"),
-        "StarField" to listOf("u_speed", "u_count", "u_brightness"),
-        "Kaleidoscope" to listOf("u_sides", "u_speed", "u_zoom"),
-        "WaterRipples" to listOf("u_speed", "u_frequency", "u_amplitude"),
         "BPM_Debug" to listOf("u_bpm", "u_BeatPhase"),
-        "PulseWave" to listOf("u_speed", "u_scale", "u_energy"),
-        "AuroraFlow" to listOf("u_speed", "u_intensity", "u_flow"),
-        "GeometricPulse" to listOf("u_speed", "u_size", "u_repetition"),
         "shader_neon_text" to listOf("u_Intensity", "u_ColorR", "u_ColorG", "u_ColorB", "u_Scale"),
-        "neon_bounce" to listOf("u_intensity"),
-        "Arcoiris" to listOf("u_nl1", "u_nl2", "u_nl3")
+        "Arcoiris" to listOf("u_nl1", "u_nl2", "u_nl3"),
+        "AsciiTunnel" to listOf("u_Speed", "u_ColorR", "u_ColorG", "u_ColorB", "u_Scale")
     )
     
     // Performance Functions
@@ -635,9 +619,9 @@ class MappingViewModel @Inject constructor(
             // CRITICAL: We're on GLThread here, must hop to main for ExoPlayer
             viewModelScope.launch(Dispatchers.Main) {
                 // [v1.14.3] Surgical Guard: Only stop if the revoked surface is the one actually playing
-                if (surfaceId == videoController.activeSurfaceId) {
+                if (videoController.isActive(surfaceId)) {
                     Log.w("MappingViewModel", "[AUTHORITY] Renderer revoked visibility for $surfaceId → stopping (Active)")
-                    videoController.stop()
+                    videoController.stop(surfaceId)
                 } else {
                     Log.d("MappingViewModel", "[AUTHORITY] Renderer revoked visibility for $surfaceId → ignoring (Not Active)")
                 }
@@ -647,19 +631,19 @@ class MappingViewModel @Inject constructor(
         // Actualizar el renderer con las superficies cargadas
         syncRenderer()
         
-        // [Phase 5] Resume active video if any
-        val activeVideoSurface = _uiState.value.surfaces.find { it.sourceType == SourceType.VIDEO && it.videoPath != null }
-        if (activeVideoSurface != null) {
-             viewModelScope.launch(Dispatchers.Main) {
-                  activeVideoSurface.videoPath?.let { path ->
-                      Log.d("MappingViewModel", "bindRenderer: Resuming video for ${activeVideoSurface.id}")
-                      videoController.start(path, activeVideoSurface.id)
-                      // Attach surface
-                      renderer.getSurfaceForId(activeVideoSurface.id) { surface ->
-                          videoController.attachSurface(surface)
-                      }
-                  }
-             }
+        // [Phase 5] Resume ALL active video surfaces (pool supports simultaneous players)
+        val activeVideoSurfaces = _uiState.value.surfaces.filter { it.sourceType == SourceType.VIDEO && it.videoPath != null }
+        activeVideoSurfaces.forEach { activeVideoSurface ->
+            viewModelScope.launch(Dispatchers.Main) {
+                activeVideoSurface.videoPath?.let { path ->
+                    Log.d("MappingViewModel", "bindRenderer: Resuming video for ${activeVideoSurface.id}")
+                    videoController.start(path, activeVideoSurface.id)
+                    // Attach surface
+                    renderer.getSurfaceForId(activeVideoSurface.id) { surface ->
+                        videoController.attachSurface(surface, activeVideoSurface.id)
+                    }
+                }
+            }
         }
     }
 
@@ -1121,8 +1105,8 @@ class MappingViewModel @Inject constructor(
             dispatchCommand(MappingCommand.RemoveSurface(id))
             return
         }
-        if (id == videoController.activeSurfaceId) {
-            videoController.stop()
+        if (videoController.isActive(id)) {
+            videoController.stop(id)
         }
         _uiState.update { state ->
             val updatedSurfaces = state.surfaces.filter { it.id != id }
@@ -1140,7 +1124,7 @@ class MappingViewModel @Inject constructor(
             dispatchCommand(MappingCommand.ClearAll())
             return
         }
-        videoController.stop()
+        videoController.stopAll()
         _uiState.update { it.copy(surfaces = emptyList(), selectedSurfaceId = null) }
         renderer?.updateSurfaces(emptyList())
         saveCurrentState()
@@ -1501,7 +1485,7 @@ class MappingViewModel @Inject constructor(
         // Apply to ExoPlayer if it's the server/standalone
         if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
             viewModelScope.launch(Dispatchers.Main) {
-                if (videoController.activeSurfaceId == id) {
+                if (videoController.isActive(id)) {
                     if (isPlaying) videoController.play() else videoController.pause()
                 }
             }
@@ -1527,8 +1511,8 @@ class MappingViewModel @Inject constructor(
         // Apply to ExoPlayer
         if (_uiState.value.executionMode != ExecutionMode.CLIENT) {
             viewModelScope.launch(Dispatchers.Main) {
-                if (videoController.activeSurfaceId == id) {
-                    videoController.setPlaybackSpeed(clampedSpeed)
+                if (videoController.isActive(id)) {
+                    videoController.setPlaybackSpeed(id, clampedSpeed)
                 }
             }
         }
@@ -1591,9 +1575,9 @@ class MappingViewModel @Inject constructor(
 
         // [v1.9.0 FASE 1] AUTORIDAD EXCLUSIVA: Shader toma control, Video pierde
         // [v1.9.0 FASE 1] AUTORIDAD EXCLUSIVA: Shader toma control, Video pierde
-        if (videoController.activeSurfaceId == id) {
+        if (videoController.isActive(id)) {
              Log.d("MappingViewModel", "[AUTHORITY] Shader taking control for $id, stopping Video")
-             videoController.stop()
+             videoController.stop(id)
         }
 
         _uiState.update { state ->
@@ -2067,9 +2051,11 @@ class MappingViewModel @Inject constructor(
             
             // 1. Release players for surfaces that are gone (Strict Sync Cleanup)
             val newIds = state.surfaces.map { it.id }.toSet()
-            if (videoController.activeSurfaceId != null && !newIds.contains(videoController.activeSurfaceId)) {
-                Log.d("MappingViewModel", "Stopping orphaned video for ${videoController.activeSurfaceId}")
-                videoController.stop()
+            // Stop all players whose surfaceId no longer exists in the new state
+            val orphanedIds = videoController.activeSurfaceIds.filter { !newIds.contains(it) }
+            orphanedIds.forEach { orphanId ->
+                Log.d("MappingViewModel", "Stopping orphaned video for $orphanId")
+                videoController.stop(orphanId)
             }
 
             // 2. Strict State Replacement — [v1.18.9] Now includes decks for Dashboard sync
@@ -2184,7 +2170,7 @@ class MappingViewModel @Inject constructor(
                     videoController.start(resolvedUri.toString(), id)
                     renderer?.getSurfaceForId(id) { surface ->
                          android.os.Handler(android.os.Looper.getMainLooper()).post {
-                             videoController.attachSurface(surface)
+                             videoController.attachSurface(surface, id)
                          }
                     }
                 } else {
@@ -2560,10 +2546,7 @@ class MappingViewModel @Inject constructor(
     fun clearAllSurfaces() {
         _uiState.update { it.copy(surfaces = emptyList()) }
         renderer?.updateSurfaces(emptyList())
-        val activeVideo = _uiState.value.surfaces.find { it.sourceType == SourceType.VIDEO }
-        if (activeVideo != null) {
-            videoController.stop()
-        }
+        videoController.stopAll()
         syncRenderer()
         dispatchCommand(MappingCommand.ClearAll())
     }
@@ -2615,7 +2598,7 @@ class MappingViewModel @Inject constructor(
         val project = _uiState.value.projects.find { it.id == projectId } ?: return
         
         // Limpiar players actuales
-        videoController.stop()
+        videoController.stopAll()
         
         // NO limpiar superficies del renderer - dejar que se reutilicen
         
@@ -2926,7 +2909,7 @@ class MappingViewModel @Inject constructor(
                         if (!needsVideo) {
                             Log.d("MappingViewModel", "[AUTHORITY] Stopping VideoController for $surfaceId (New Source: ${effect.sourceType})")
                             viewModelScope.launch(Dispatchers.Main) {
-                                videoController.stop()
+                                videoController.stop(surfaceId)
                             }
                         }
                     }
@@ -2973,14 +2956,14 @@ class MappingViewModel @Inject constructor(
                         
                         // [v1.14.4] Surgical Stop: Only if this surface was playing AND no other slot needs video
                         viewModelScope.launch(Dispatchers.Main) {
-                            if (surface.id == videoController.activeSurfaceId) {
+                            if (videoController.isActive(surface.id)) {
                                 val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
                                 
                                 if (!otherSlotsNeedVideo) {
                                     Log.d("MappingViewModel", "[AUTHORITY] Shader taking control for ${surface.id}, stopping active Video")
-                                    videoController.stop()
+                                    videoController.stop(surface.id)
                                 } else {
                                     Log.d("MappingViewModel", "[AUTHORITY] Shader active, but keeping Video running for other slots on ${surface.id}")
                                 }
@@ -2994,15 +2977,15 @@ class MappingViewModel @Inject constructor(
                          )
                          // [v1.14.4] Surgical Stop
                          viewModelScope.launch(Dispatchers.Main) {
-                            if (surface.id == videoController.activeSurfaceId) {
+                            if (videoController.isActive(surface.id)) {
                                 val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
                                 if (!otherSlotsNeedVideo) {
-                                    videoController.stop()
+                                    videoController.stop(surface.id)
                                 }
                             }
-                        }
+                         }
                     } else if (newEffect.sourceType == SourceType.MJPEG_CAMERA) {
                          Log.d("MappingViewModel", "Authority: Switching to CAMERA for ${surface.id}")
                          newSurface = newSurface.copy(
@@ -3011,12 +2994,12 @@ class MappingViewModel @Inject constructor(
                          )
                          // [v1.14.4] Surgical Stop
                          viewModelScope.launch(Dispatchers.Main) {
-                            if (surface.id == videoController.activeSurfaceId) {
+                            if (videoController.isActive(surface.id)) {
                                 val otherSlotsNeedVideo = (newSurface.backgroundsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.visualsSlot?.sourceType == SourceType.VIDEO) ||
                                                           (newSurface.fxSlot?.sourceType == SourceType.VIDEO)
                                 if (!otherSlotsNeedVideo) {
-                                    videoController.stop()
+                                    videoController.stop(surface.id)
                                 }
                             }
                         }
@@ -3041,7 +3024,7 @@ class MappingViewModel @Inject constructor(
                              )
                              
                              viewModelScope.launch(Dispatchers.Main) {
-                                 videoController.stop()
+                                 videoController.stop(surface.id)
                              }
                          }
                     }
@@ -3633,9 +3616,9 @@ class MappingViewModel @Inject constructor(
             when (command.type) {
                 SourceType.MJPEG_CAMERA -> {
                 // [v1.14.4] Surgical Stop: Ensure we don't kill other figure's video
-                if (command.surfaceId == videoController.activeSurfaceId) {
+                if (videoController.isActive(command.surfaceId)) {
                     Log.i("MappingViewModel", "Stopping VideoController for Camera Stream switch on ${command.surfaceId}")
-                    videoController.stop()
+                    videoController.stop(command.surfaceId)
                 }
                 
                 // TODO [Phase 5.8.3]: Start MjpegStreamController here
