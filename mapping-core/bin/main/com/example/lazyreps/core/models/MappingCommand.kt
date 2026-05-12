@@ -786,12 +786,23 @@ sealed class MappingCommand {
                             deckIndex
                         )
                     }
+                    "PING" -> Ping(obj.optLong("timestamp", 0L))
                     else -> null
                 }
             } catch (e: Exception) {
                 null
             }
         }
+    }
+
+    data class Ping(
+        val timestamp: Long = System.currentTimeMillis()
+    ) : MappingCommand() {
+        override fun toJSONObject() = JSONObject().apply {
+            put("type", "PING")
+            put("timestamp", timestamp)
+        }
+        override fun invert(state: MappingState) = null
     }
 
     data class SetPlayState(

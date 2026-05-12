@@ -43,7 +43,7 @@ class MappingNetworkManager(
         try {
             server = MappingWebSocketServer(InetSocketAddress(wsPort), callback).apply {
                 isReuseAddr = true
-                connectionLostTimeout = 15 // Check for lost connections every 15s
+                connectionLostTimeout = 60 // [Resilience] 60s for unstable prosumer WiFi
                 start()
             }
             // [v1.18.19] Managed Subdirectory for Uploads
@@ -71,7 +71,8 @@ class MappingNetworkManager(
         try {
             val uri = URI("ws://$serverIp:$wsPort")
             client = MappingWebSocketClient(uri, callback).apply {
-                connectionLostTimeout = 15 // Check for lost connections every 15s
+                connectionLostTimeout = 60 // [Resilience] 60s for unstable prosumer WiFi
+                setTcpNoDelay(true) // [Architecture] Prioritize small control packets
                 connect()
             }
             // [Phase 5] Client also starts HTTP server to serve files

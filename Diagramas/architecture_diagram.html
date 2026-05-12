@@ -1,0 +1,1119 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Arquitectura — MappingAndroid</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+
+  <style>
+    :root {
+      --bg:        #0d0f14;
+      --surface:   #13161e;
+      --surface2:  #1a1e29;
+      --border:    #252a38;
+      --accent:    #6c63ff;
+      --accent2:   #a78bfa;
+      --accent3:   #38bdf8;
+      --green:     #34d399;
+      --orange:    #fb923c;
+      --pink:      #f472b6;
+      --text:      #e2e8f0;
+      --text-dim:  #7c8499;
+      --text-mute: #4a5068;
+      --radius:    12px;
+      --sidebar-w: 270px;
+      --header-h:  64px;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', sans-serif;
+      font-size: 15px;
+      line-height: 1.7;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ── */
+    aside {
+      position: fixed;
+      top: 0; left: 0;
+      width: var(--sidebar-w);
+      height: 100vh;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      z-index: 100;
+    }
+
+    .sidebar-logo {
+      padding: 20px 20px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .sidebar-logo .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: linear-gradient(135deg, var(--accent), var(--accent3));
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #fff;
+      margin-bottom: 10px;
+    }
+
+    .sidebar-logo h1 {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      line-height: 1.3;
+    }
+
+    .sidebar-logo p {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 4px;
+    }
+
+    nav { padding: 12px 0; flex: 1; }
+
+    nav .section-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      padding: 10px 20px 4px;
+    }
+
+    nav a {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 20px;
+      color: var(--text-dim);
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      border-left: 2px solid transparent;
+      transition: all 0.18s ease;
+    }
+
+    nav a:hover {
+      color: var(--text);
+      background: var(--surface2);
+      border-left-color: var(--accent2);
+    }
+
+    nav a.active {
+      color: var(--accent2);
+      background: rgba(108, 99, 255, 0.08);
+      border-left-color: var(--accent);
+    }
+
+    nav a .icon { font-size: 15px; width: 18px; text-align: center; }
+
+    /* ── Main ── */
+    main {
+      margin-left: var(--sidebar-w);
+      flex: 1;
+      padding: 0;
+    }
+
+    /* ── Header ── */
+    header {
+      position: sticky;
+      top: 0;
+      background: rgba(13, 15, 20, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      height: var(--header-h);
+      display: flex;
+      align-items: center;
+      padding: 0 40px;
+      gap: 16px;
+      z-index: 50;
+    }
+
+    header h2 {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-dim);
+    }
+
+    header h2 span { color: var(--text); font-weight: 600; }
+
+    .pills {
+      display: flex;
+      gap: 8px;
+      margin-left: auto;
+    }
+
+    .pill {
+      padding: 4px 12px;
+      border-radius: 99px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+
+    .pill.green  { background: rgba(52,211,153,.12); color: var(--green); border: 1px solid rgba(52,211,153,.25); }
+    .pill.blue   { background: rgba(56,189,248,.12); color: var(--accent3); border: 1px solid rgba(56,189,248,.25); }
+    .pill.purple { background: rgba(167,139,250,.12); color: var(--accent2); border: 1px solid rgba(167,139,250,.25); }
+
+    /* ── Content ── */
+    .content {
+      padding: 40px;
+      max-width: 1100px;
+    }
+
+    /* ── Sections ── */
+    section {
+      margin-bottom: 60px;
+      scroll-margin-top: calc(var(--header-h) + 24px);
+    }
+
+    section h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 6px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    section h2 .num {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent);
+      background: rgba(108,99,255,.12);
+      border: 1px solid rgba(108,99,255,.25);
+      padding: 2px 8px;
+      border-radius: 99px;
+      letter-spacing: 0.06em;
+    }
+
+    .section-desc {
+      color: var(--text-dim);
+      font-size: 14px;
+      margin-bottom: 24px;
+      padding-left: 2px;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 0 0 60px;
+    }
+
+    /* ── Hero ── */
+    .hero {
+      background: linear-gradient(135deg, rgba(108,99,255,.08) 0%, rgba(56,189,248,.06) 50%, rgba(52,211,153,.05) 100%);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 32px 36px;
+      margin-bottom: 48px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -60px; right: -60px;
+      width: 200px; height: 200px;
+      background: radial-gradient(circle, rgba(108,99,255,.15), transparent 70%);
+      pointer-events: none;
+    }
+
+    .hero h1 {
+      font-size: 28px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #fff 30%, var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 8px;
+    }
+
+    .hero p {
+      color: var(--text-dim);
+      font-size: 15px;
+      max-width: 620px;
+    }
+
+    .hero-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 20px;
+    }
+
+    .tag {
+      padding: 4px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      background: var(--surface2);
+    }
+
+    /* ── Diagram Card ── */
+    .diagram-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      margin-bottom: 16px;
+    }
+
+    .diagram-card-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 18px;
+      border-bottom: 1px solid var(--border);
+      background: var(--surface2);
+    }
+
+    .diagram-card-header .dot {
+      width: 8px; height: 8px;
+      border-radius: 50%;
+    }
+
+    .diagram-card-header span {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-dim);
+      letter-spacing: 0.04em;
+    }
+
+    .diagram-card .mermaid {
+      padding: 28px 24px;
+      overflow-x: auto;
+      display: flex;
+      justify-content: center;
+    }
+
+    /* ── Table ── */
+    .tech-table {
+      width: 100%;
+      border-collapse: collapse;
+      border-radius: var(--radius);
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }
+
+    .tech-table thead {
+      background: var(--surface2);
+    }
+
+    .tech-table th {
+      padding: 12px 18px;
+      text-align: left;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .tech-table td {
+      padding: 11px 18px;
+      font-size: 13px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    .tech-table tr:last-child td { border-bottom: none; }
+
+    .tech-table tr:hover td { background: rgba(255,255,255,.025); }
+
+    .tech-table td:first-child {
+      font-weight: 600;
+      color: var(--accent2);
+      white-space: nowrap;
+    }
+
+    .tech-table td:last-child { color: var(--text-dim); }
+
+    code {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 12px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 1px 6px;
+      color: var(--accent3);
+    }
+
+    /* ── Mermaid Theme Override ── */
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* ── Scroll to top ── */
+    #top-btn {
+      position: fixed;
+      bottom: 32px;
+      right: 32px;
+      width: 40px; height: 40px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-size: 18px;
+      box-shadow: 0 4px 20px rgba(108,99,255,.4);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .2s;
+      z-index: 200;
+    }
+
+    #top-btn.visible { opacity: 1; pointer-events: auto; }
+    #top-btn:hover { background: var(--accent2); }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      aside { display: none; }
+      main  { margin-left: 0; }
+      .content { padding: 24px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════ SIDEBAR ═══════════════════ -->
+<aside>
+  <div class="sidebar-logo">
+    <div class="badge">🗺️ Mapping Android</div>
+    <h1>Arquitectura del Sistema</h1>
+    <p>v2.4 · Análisis Completo</p>
+  </div>
+  <nav>
+    <div class="section-label">Visión General</div>
+    <a href="#modulos" class="active"><span class="icon">📦</span> Módulos Gradle</a>
+    <a href="#capas"><span class="icon">🏗️</span> Capas de la App</a>
+
+    <div class="section-label">Dominio</div>
+    <a href="#modelos"><span class="icon">📐</span> Modelos de Dominio</a>
+    <a href="#comandos"><span class="icon">⚡</span> Comandos</a>
+
+    <div class="section-label">Infraestructura</div>
+    <a href="#red"><span class="icon">🌐</span> Capa de Red</a>
+    <a href="#opengl"><span class="icon">🖥️</span> Motor OpenGL</a>
+    <a href="#fbo"><span class="icon">🎞️</span> FBOManager</a>
+
+    <div class="section-label">Estado & UI</div>
+    <a href="#viewmodel"><span class="icon">🧠</span> ViewModel</a>
+    <a href="#ui"><span class="icon">🎨</span> Pantallas UI</a>
+    <a href="#flujo"><span class="icon">🔄</span> Flujo de Datos</a>
+
+    <div class="section-label">Persistencia</div>
+    <a href="#persistencia"><span class="icon">💾</span> Crash Recovery</a>
+    <a href="#tecnologias"><span class="icon">🛠️</span> Tecnologías</a>
+  </nav>
+</aside>
+
+<!-- ═══════════════════ MAIN ═══════════════════ -->
+<main>
+  <header>
+    <h2>MappingAndroid / <span>Arquitectura Completa</span></h2>
+    <div class="pills">
+      <span class="pill green">Kotlin</span>
+      <span class="pill blue">OpenGL ES 2.0</span>
+      <span class="pill purple">WebSocket</span>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <!-- Hero -->
+    <div class="hero">
+      <h1>Arquitectura Completa — MappingAndroid</h1>
+      <p>Aplicación Android de video-mapping en tiempo real con soporte multi-dispositivo (Servidor/Cliente), renderizado OpenGL ES 2.0 y sincronización de estado por WebSocket.</p>
+      <div class="hero-tags">
+        <span class="tag">Jetpack Compose</span>
+        <span class="tag">ExoPlayer / Media3</span>
+        <span class="tag">GLSurfaceView</span>
+        <span class="tag">FBO Multi-layer</span>
+        <span class="tag">NanoHTTPD</span>
+        <span class="tag">UDP Discovery</span>
+        <span class="tag">Hilt DI</span>
+        <span class="tag">25+ GLSL Shaders</span>
+        <span class="tag">Undo/Redo (50 steps)</span>
+        <span class="tag">Crash Recovery</span>
+      </div>
+    </div>
+
+    <!-- 1. Módulos -->
+    <section id="modulos">
+      <h2><span class="num">01</span> Estructura de Módulos Gradle</h2>
+      <p class="section-desc">El proyecto se divide en dos módulos: <code>:app</code> contiene toda la lógica Android, y <code>:mapping-core</code> es una librería Kotlin pura sin dependencias del framework Android.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#34d399"></div>
+          <span>GRADLE MODULES</span>
+        </div>
+        <div class="mermaid">
+graph TD
+    subgraph Gradle["📦 Proyecto Gradle"]
+        APP["&colon;app\nAplicación Android principal\n(UI · Renderer · Media · Network)"]
+        CORE["&colon;mapping-core\nLibrería pura Kotlin\n(Modelos · NetworkManager · Sin deps Android)"]
+    end
+    APP -->|depends on| CORE
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 2. Capas -->
+    <section id="capas">
+      <h2><span class="num">02</span> Arquitectura General por Capas</h2>
+      <p class="section-desc">Visión de todas las capas del sistema y cómo se interconectan: UI → ViewModel → Renderer + Media + Network → Domain Models.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#6c63ff"></div>
+          <span>LAYERED ARCHITECTURE</span>
+        </div>
+        <div class="mermaid">
+flowchart TB
+    subgraph UI["🎨 Capa UI — Jetpack Compose"]
+        MS["MappingScreen\n+ MappingViewModel"]
+        DS["DashboardScreen"]
+        FP["FilePicker\n(Local + Remote)"]
+        ES["ExerciseSelector"]
+    end
+
+    subgraph VM["🧠 Estado Orquestador"]
+        MVM["MappingViewModel\n(StateFlow · Coroutines · Hilt)"]
+    end
+
+    subgraph GFX["🖥️ Motor Gráfico — OpenGL ES 2.0"]
+        MR["MappingRenderer\n(GLSurfaceView.Renderer)"]
+        FBO["FBOManager\n(Offscreen Buffers)"]
+        SH["Shader Programs\n(25+ shaders GLSL)"]
+    end
+
+    subgraph MEDIA["🎬 Media"]
+        EXO["ExoPlayer\n(Video Playback)"]
+        MJPEG["MjpegStreamController\n(IP Camera streaming)"]
+        VC["VideoController\n(Lifecycle wrapper)"]
+        CAM["CameraStreamManager\n(Local Camera → MJPEG)"]
+    end
+
+    subgraph NET["🌐 Red"]
+        NM["MappingNetworkManager\n(mapping-core)"]
+        WS_SRV["WebSocket Server\n:8080"]
+        WS_CLI["WebSocket Client\n→ :8080"]
+        HTTP["HTTP Server (NanoHTTPD)\n:8081"]
+        UDP["MappingDiscoveryService\nUDP Broadcast :8888"]
+    end
+
+    subgraph DOMAIN["📐 Dominio — mapping-core"]
+        STATE["MappingState"]
+        CMD["MappingCommand (sealed)"]
+        SURF["MappingSurface"]
+        SLOT["EffectSlot"]
+        DECK["MappingDeck"]
+        CLIP["MappingClip"]
+    end
+
+    subgraph PERSIST["💾 Persistencia"]
+        PREFS["SharedPreferences\ncurrent_full_state_json"]
+        CRASH["Crash Recovery\nlast_crash.txt"]
+    end
+
+    subgraph APP_ENTRY["🚀 Entrada de la App"]
+        MAPP["MappingApplication\n(@HiltAndroidApp · Crash Handler)"]
+        MAIN["MainActivity\n(@AndroidEntryPoint)"]
+    end
+
+    UI --> VM
+    VM --> GFX
+    VM --> MEDIA
+    VM --> NET
+    VM --> PERSIST
+    GFX --> DOMAIN
+    NET --> DOMAIN
+    APP_ENTRY --> VM
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 3. Modelos -->
+    <section id="modelos">
+      <h2><span class="num">03</span> Modelos de Dominio (mapping-core)</h2>
+      <p class="section-desc">Diagrama de clases del módulo <code>:mapping-core</code>. Todos los modelos son serializables a/desde JSON para sincronización por red.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#f472b6"></div>
+          <span>CLASS DIAGRAM</span>
+        </div>
+        <div class="mermaid">
+classDiagram
+    class MappingState {
+        +outputMode: String
+        +surfaces: List~MappingSurface~
+        +decks: List~MappingDeck~
+        +activeDeckIndex: Int
+        +screenWidth: Float
+        +screenHeight: Float
+        +isFullScreen: Boolean
+        +targetFPS: Int
+        +globalBPM: Float
+        +toJSON(): String
+        +fromJSON(String): MappingState?
+    }
+
+    class MappingSurface {
+        +id: String
+        +name: String
+        +sourceType: SourceType
+        +videoPath: String?
+        +imagePath: String?
+        +shaderId: String?
+        +shaderText: String?
+        +shaderParameters: Map~String, Float~
+        +corners: FloatArray [8]
+        +texCoords: FloatArray [8]
+        +holes: List~FloatArray~
+        +backgroundsSlot: EffectSlot?
+        +visualsSlot: EffectSlot?
+        +fxSlot: EffectSlot?
+        +opacity: Float
+        +isVisible: Boolean
+        +isBlack: Boolean
+        +isNegative: Boolean
+        +rotation: Float
+        +flipHorizontal: Boolean
+        +flipVertical: Boolean
+        +isPlaying: Boolean
+        +playbackSpeed: Float
+        +mediaParams: Map~String, String~
+    }
+
+    class EffectSlot {
+        +sourceType: SourceType
+        +content: String
+        +opacity: Float
+        +shaderText: String?
+        +shaderParameters: Map~String, Float~
+    }
+
+    class MappingDeck {
+        +id: String
+        +name: String
+        +layerClips: Map~String, List~MappingClip?~~
+    }
+
+    class MappingClip {
+        +id: String
+        +name: String
+        +sourceType: SourceType
+        +path: String?
+        +shaderText: String?
+        +shaderParameters: Map~String, Float~
+        +thumbnailPath: String?
+        +mediaParams: Map~String, String~
+    }
+
+    class SourceType {
+        &lt;&lt;enumeration&gt;&gt;
+        VIDEO
+        SHADER
+        IMAGE
+        MJPEG_CAMERA
+    }
+
+    class MappingCommand {
+        &lt;&lt;sealed&gt;&gt;
+        +toJSONObject(): JSONObject
+        +invert(state): MappingCommand?
+    }
+
+    MappingState "1" --> "0..*" MappingSurface
+    MappingState "1" --> "0..*" MappingDeck
+    MappingSurface --> EffectSlot : backgroundsSlot
+    MappingSurface --> EffectSlot : visualsSlot
+    MappingSurface --> EffectSlot : fxSlot
+    MappingSurface --> SourceType
+    MappingDeck "1" --> "0..*" MappingClip
+    MappingCommand ..> MappingState : operates on
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 4. Comandos -->
+    <section id="comandos">
+      <h2><span class="num">04</span> Comandos del Dominio (MappingCommand)</h2>
+      <p class="section-desc"><code>MappingCommand</code> es una sealed class con más de 25 subtipos. Cada comando implementa <code>toJSONObject()</code> para transmisión por red e <code>invert(state)</code> para el sistema de undo/redo.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#fb923c"></div>
+          <span>COMMAND MINDMAP</span>
+        </div>
+        <div class="mermaid">
+mindmap
+  root((MappingCommand))
+    Geometría
+      UpdateVertex
+      UpdateAllCorners
+      ScaleSurface
+      RotateSurface
+      FlipSurface
+      MoveLayer
+    Superficies
+      AddSurface
+      RemoveSurface
+      RestoreSurface
+      SetLayerName
+      ToggleVisibility
+      ToggleBlackMode
+      ToggleNegativeMode
+    Contenido
+      SetSourceType
+      SetVideoPath
+      SetImagePath
+      SetShaderId
+      SetShaderText
+      UpdateShaderParameter
+      UpdateMediaParam
+      TriggerClip
+      UpdateClipInSlot
+    Reproducción
+      SetLayerPlayState
+      SetPlaybackSpeed
+      SetPlayState
+    Global
+      SetOutputMode
+      ToggleFullScreen
+      ClearAll
+      SetActiveDeck
+      SetTargetFPS
+      SetGlobalBPM
+    Red
+      ClientHello
+      ServerHello
+      SetMediaSource
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 5. Red -->
+    <section id="red">
+      <h2><span class="num">05</span> Capa de Red</h2>
+      <p class="section-desc">Arquitectura dual WebSocket + HTTP + UDP. El <strong>proyector</strong> actúa como servidor; el <strong>celular</strong> como cliente. Ambos corren su propio HTTP server para servir archivos localmente.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#38bdf8"></div>
+          <span>NETWORK ARCHITECTURE</span>
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph SERVER["📡 Modo Servidor (Proyector)"]
+        WSS["WebSocket Server\n:8080\norg.java-websocket"]
+        HTTPS["HTTP Server\n:8081 NanoHTTPD\nGET /list /info /version\nGET /video.mp4\nPOST /upload\nPOST /update"]
+        UDPS["UDP Discovery Listener\n:8888\nMAPPING_SERVER_DISCOVERY"]
+    end
+
+    subgraph CLIENT["📱 Modo Cliente (Celular)"]
+        WSC["WebSocket Client\nws://ip:8080"]
+        HTTPC["HTTP Server\n:8081 mismo\nSirve archivos locales"]
+        UDPC["UDP Discovery Broadcaster\nBroadcast 8888\n3 intentos x 1s"]
+    end
+
+    subgraph MSG["📨 Mensajes"]
+        CMD2["MappingCommand JSON\ntype + params"]
+        FULL_STATE["MappingState JSON\ntype: FULL_STATE"]
+    end
+
+    WSS <-->|Commands + State| WSC
+    UDPS -->|MAPPING_SERVER_HERE| UDPC
+    HTTPC -->|GET /video.mp4| HTTPS
+
+    CMD2 --> WSS
+    FULL_STATE --> WSS
+    CMD2 --> WSC
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 6. OpenGL -->
+    <section id="opengl">
+      <h2><span class="num">06</span> Motor OpenGL ES 2.0 (MappingRenderer)</h2>
+      <p class="section-desc">El renderer corre en el GL Thread y gestiona el ciclo de vida de SurfaceTextures, 25+ shaders procedurales (cargados de forma lazy), y el pipeline multi-capa con FBOs.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#a78bfa"></div>
+          <span>GL RENDERER PIPELINE</span>
+        </div>
+        <div class="mermaid">
+flowchart TB
+    subgraph GL["🖥️ GL Thread — MappingRenderer"]
+        direction TB
+        OSC["onSurfaceCreated\nInit GL Programs"]
+        OSZ["onSurfaceChanged\nViewport · FBOManager init"]
+        ODF["onDrawFrame"]
+
+        subgraph PROGRAMS["GL Programs"]
+            P1["Main Video Program\nmapping_vertex/fragment_shader\nSurfaceTexture OES"]
+            P2["Image Program\nimage_fragment_shader\nFXType + FXIntensity"]
+            P3["Mask Program\nsimple_vertex/fragment_shader\nStencil · Holes · Negatives"]
+            P4["Overlay Program\nEDIT mode wire outlines"]
+            P5["25+ Procedural Shaders\nLazy loaded 1 per sec max"]
+        end
+
+        subgraph FRAME["onDrawFrame Pipeline"]
+            F1["1. Process pending SurfaceTextures"]
+            F2["2. Update Time + Beat Phase BPM"]
+            F3["3. Clear Screen"]
+            F4["4. Process deferred shader queue"]
+            F5["5. drawSurfaceMultiLayer()"]
+            F6["6. drawOverlays() si EDIT mode"]
+            F7["7. FPS Throttle targetFPS"]
+        end
+
+        subgraph MULTILAYER["Multi-Layer Composite Pipeline FBO"]
+            ML1["FBO 0: Composition Buffer\nbackgroundsSlot → visualsSlot → fxSlot"]
+            ML2["FBO 1/2: Scratch Buffers"]
+            ML3["FBO 3: UV Local Mask\nNegative / Hole surfaces"]
+            ML4["Warp Pass: Apply corners\nHomography → screen space"]
+        end
+    end
+
+    OSC --> PROGRAMS
+    ODF --> FRAME
+    F5 --> MULTILAYER
+
+    subgraph SHADERS25["🎨 Shader Presets 25+"]
+        SH1["MagicRoots · FireEnergy · LeafStorm"]
+        SH2["PlasmaWaves · VoronoiCells · FractalZoom"]
+        SH3["LiquidMetal · NeonGrid · StarField"]
+        SH4["Kaleidoscope · WaterRipples · AuroraFlow"]
+        SH5["GeometricPulse · WatcherEyes · MysticLiquid"]
+        SH6["neon_bounce · Arcoiris · BPM_Debug"]
+    end
+
+    P5 --- SHADERS25
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 7. FBO -->
+    <section id="fbo">
+      <h2><span class="num">07</span> FBOManager — Renderizado Multi-capa</h2>
+      <p class="section-desc">Cada <code>MappingSurface</code> tiene 3 slots (backgrounds / visuals / fx) que se componen en offscreen render targets antes del warp final al espacio de pantalla.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#34d399"></div>
+          <span>FBO PIPELINE</span>
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph FBO["FBOManager"]
+        F0["FBO 0\nComposition Buffer\nFlat layers"]
+        F1["FBO 1\nScratch / Warp"]
+        F2["FBO 2\nScratch B"]
+        F3["FBO 3\nUV Mask\nNegative surfaces"]
+    end
+
+    IN["backgroundsSlot\nvisualsSlot\nfxSlot"] --> F0
+    F0 --> F1
+    F3 -->|"u_Mask uniform\nShape-Aware Shaders"| F1
+    F1 -->|"Corner Warp\n4-point homography"| OUT["Screen Output"]
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 8. ViewModel -->
+    <section id="viewmodel">
+      <h2><span class="num">08</span> MappingViewModel — Orquestador Central</h2>
+      <p class="section-desc">El ViewModel es el corazón de la app: gestiona el estado global, el historial de undo/redo, el pool de ExoPlayers, la persistencia y la comunicación de red.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#6c63ff"></div>
+          <span>VIEWMODEL ARCHITECTURE</span>
+        </div>
+        <div class="mermaid">
+flowchart TB
+    subgraph MVM["MappingViewModel StateFlow + Hilt"]
+        subgraph STATE_FLOWS["StateFlows"]
+            SF1["mappingState: MappingState"]
+            SF2["networkMode: SERVER/CLIENT/DISCONNECTED"]
+            SF3["connectedClients: List"]
+            SF4["remoteFiles: List"]
+            SF5["uploadProgress: Float"]
+            SF6["isFullScreen: Boolean"]
+        end
+
+        subgraph ROLES["Modos de Operación"]
+            R1["SERVER\nAcepta conexiones\nBroadcast state a clients"]
+            R2["CLIENT\nEnvía commands al server\nRecibe state del server"]
+            R3["STANDALONE\nLocal only"]
+        end
+
+        subgraph HISTORY["Undo/Redo Stack"]
+            H1["undoStack: ArrayDeque MappingCommand"]
+            H2["redoStack: ArrayDeque MappingCommand"]
+            H3["MAX_UNDO = 50"]
+        end
+
+        subgraph RECOVERY["Crash Recovery"]
+            CR1["Persiste estado cada operación\nSharedPreferences"]
+            CR2["Estado estable cada 30s\ncurrent_full_state_stable"]
+            CR3["Lee last_crash.txt\nen Application.onCreate"]
+        end
+
+        subgraph EXOPLAYER["ExoPlayer Management"]
+            EX1["playerPool: Map String ExoPlayer"]
+            EX2["getSurfaceForId() GL Surface"]
+            EX3["VideoController lifecycle"]
+            EX4["onVideoNotVisible callback\nRenderer ViewModel"]
+        end
+    end
+
+    MVM -->|"dispatch(command)"| CMD_FLOW["Command Flow\n1. apply local state\n2. update renderer\n3. send via network if not standalone"]
+    MVM -->|"updateRenderer(state)"| MR2["MappingRenderer.updateState()"]
+    MVM <-->|"NetworkCallback"| NM2["MappingNetworkManager"]
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 9. UI -->
+    <section id="ui">
+      <h2><span class="num">09</span> Pantallas UI — Jetpack Compose</h2>
+      <p class="section-desc">Estructura de pantallas y sus componentes. <code>MappingScreen</code> es la pantalla principal con el viewport GL, controles de layers, shaders, decks y control remoto.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#f472b6"></div>
+          <span>UI SCREENS</span>
+        </div>
+        <div class="mermaid">
+flowchart TD
+    subgraph UI_SCREENS["📱 Pantallas"]
+        subgraph HOME["HomeScreen"]
+            H1["Selector de modo\nStandalone · Server · Client"]
+            H2["HomeUiState / HomeEvent"]
+        end
+
+        subgraph MAPPING_SCR["MappingScreen principal"]
+            M1["GLSurfaceView\nMappingRenderer"]
+            M2["Layer Panel\nLista de MappingSurface"]
+            M3["Shape Selector\nQuad · Triangle · Custom"]
+            M4["Shader Picker\nfrom ShaderPreset registry"]
+            M5["Remote Config Dialog\nWS + UDP auto-discovery\nManual IP tab"]
+            M6["Remote File Browser\nFile list Thumbnails"]
+            M7["Deck / Clip Grid\nVJ Pad interface"]
+            M8["Edit / Show mode toggle"]
+        end
+
+        subgraph DASHBOARD_SCR["DashboardScreen"]
+            D1["Camera FX Panel\nmediaParams: brightness\ncontrast saturation hue"]
+            D2["BPM Control"]
+            D3["FPS Target Slider"]
+            D4["Global controls\nClearAll · FullScreen"]
+        end
+
+        subgraph COMPONENTS["Componentes Compartidos"]
+            C1["FilePicker\nLocal files\nRemote HTTP browse"]
+            C2["ExerciseSelector"]
+        end
+    end
+
+    HOME --> MAPPING_SCR
+    MAPPING_SCR --> DASHBOARD_SCR
+    MAPPING_SCR --> COMPONENTS
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 10. Flujo de Datos -->
+    <section id="flujo">
+      <h2><span class="num">10</span> Flujo de Datos Completo</h2>
+      <p class="section-desc">Traza completa desde la interacción del usuario hasta el frame renderizado, incluyendo la sincronización con dispositivos remotos.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#fb923c"></div>
+          <span>SEQUENCE DIAGRAM</span>
+        </div>
+        <div class="mermaid">
+sequenceDiagram
+    participant User as 👆 Usuario
+    participant UI as MappingScreen
+    participant VM as MappingViewModel
+    participant Net as MappingNetworkManager
+    participant Rend as MappingRenderer
+    participant EXO as ExoPlayer
+
+    User->>UI: Drag corner / tap button
+    UI->>VM: dispatch(MappingCommand)
+    VM->>VM: apply(state + command) newState
+    VM->>VM: push to undoStack
+    VM->>VM: persist(SharedPreferences)
+    VM->>Rend: updateState(newState)
+    VM->>Net: sendCommand(command) if networked
+
+    Note over Net: SERVER broadcast / CLIENT send
+    Net-->>VM: onCommandReceived(cmd) remote peer
+    VM->>VM: apply remote command
+    VM->>Rend: updateState(newState)
+
+    Rend->>EXO: getSurfaceForId(id)
+    EXO-->>Rend: Surface SurfaceTexture
+    Rend->>Rend: onDrawFrame()
+    Rend->>Rend: onFrameAvailable requestRender()
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 11. Persistencia -->
+    <section id="persistencia">
+      <h2><span class="num">11</span> Persistencia y Recuperación de Crashes</h2>
+      <p class="section-desc">Sistema de doble checkpoint: estado actual tras cada operación + estado estable cada 30s. Ante un crash, <code>Application.onCreate()</code> hace rollback automático antes de que arranque cualquier ViewModel.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#34d399"></div>
+          <span>PERSISTENCE & RECOVERY</span>
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph NORMAL["Flujo Normal"]
+        OP["dispatch(command)"] -->|"after each op"| SP1["SharedPreferences\ncurrent_full_state_json"]
+        STABLE["Timer 30s"] --> SP2["SharedPreferences\ncurrent_full_state_stable"]
+    end
+
+    subgraph CRASH["En caso de Crash"]
+        HANDLER["UncaughtExceptionHandler\nMappingApplication"] --> CFILE["filesDir/last_crash.txt"]
+        HANDLER --> PUBLOG["externalFiles/mapping_last_crash.log"]
+    end
+
+    subgraph RECOVERY_FLOW["Recuperación al inicio"]
+        START["Application.onCreate()"] -->|"last_crash.txt existe?"| ROLLBACK["Rollback:\nstable to current_full_state_json"]
+        ROLLBACK --> VM_LOAD["ViewModel carga estado\ny muestra notificación UI"]
+    end
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
+    <!-- 12. Tecnologías -->
+    <section id="tecnologias">
+      <h2><span class="num">12</span> Resumen de Tecnologías</h2>
+      <p class="section-desc">Stack tecnológico completo del proyecto.</p>
+      <table class="tech-table">
+        <thead>
+          <tr>
+            <th>Capa</th>
+            <th>Tecnología</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td>UI</td><td>Jetpack Compose + Material 3</td></tr>
+          <tr><td>State Management</td><td>ViewModel + StateFlow + Hilt DI</td></tr>
+          <tr><td>Gráficos</td><td>OpenGL ES 2.0 · GLSurfaceView · FBO Offscreen Rendering</td></tr>
+          <tr><td>Video</td><td>ExoPlayer (Media3)</td></tr>
+          <tr><td>Cámara IP</td><td>MJPEG over HTTP streaming</td></tr>
+          <tr><td>WebSocket</td><td>org.java-websocket (Server + Client)</td></tr>
+          <tr><td>HTTP Server</td><td>NanoHTTPD :8081 (upload, download, file listing)</td></tr>
+          <tr><td>Discovery</td><td>UDP Broadcast :8888 (auto-discovery en LAN)</td></tr>
+          <tr><td>Persistencia</td><td>SharedPreferences (JSON serialization)</td></tr>
+          <tr><td>Serialización</td><td>org.json (sin reflection, manual)</td></tr>
+          <tr><td>Concurrencia</td><td>Kotlin Coroutines · GL Thread · Main Thread</td></tr>
+          <tr><td>DI</td><td>Hilt (@HiltAndroidApp · @AndroidEntryPoint)</td></tr>
+          <tr><td>Shaders</td><td>25+ GLSL procedurales con lazy loading</td></tr>
+          <tr><td>Undo/Redo</td><td>Command Pattern con invert() — 50 steps</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+  </div><!-- /content -->
+</main>
+
+<!-- Scroll to top -->
+<button id="top-btn" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+
+<script>
+  // Mermaid init
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: 'dark',
+    themeVariables: {
+      darkMode: true,
+      background: '#13161e',
+      primaryColor: '#1a1e29',
+      primaryTextColor: '#e2e8f0',
+      primaryBorderColor: '#252a38',
+      lineColor: '#6c63ff',
+      secondaryColor: '#1a1e29',
+      tertiaryColor: '#252a38',
+      edgeLabelBackground: '#13161e',
+      clusterBkg: '#13161e',
+      clusterBorder: '#252a38',
+      titleColor: '#e2e8f0',
+      nodeTextColor: '#e2e8f0',
+      mainBkg: '#1a1e29',
+      nodeBorder: '#252a38',
+      fontFamily: 'Inter, sans-serif',
+      fontSize: '13px'
+    },
+    flowchart: { curve: 'basis', padding: 20, htmlLabels: true },
+    sequence: { diagramMarginX: 20, diagramMarginY: 20, useMaxWidth: true },
+    mindmap: { padding: 10 }
+  });
+
+  // Sidebar active link on scroll
+  const sections = document.querySelectorAll('section[id]');
+  const navLinks = document.querySelectorAll('nav a');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        navLinks.forEach(l => l.classList.remove('active'));
+        const active = document.querySelector(`nav a[href="#${entry.target.id}"]`);
+        if (active) active.classList.add('active');
+      }
+    });
+  }, { rootMargin: '-20% 0px -75% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+
+  // Scroll to top button
+  const topBtn = document.getElementById('top-btn');
+  window.addEventListener('scroll', () => {
+    topBtn.classList.toggle('visible', window.scrollY > 400);
+  });
+</script>
+</body>
+</html>

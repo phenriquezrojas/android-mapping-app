@@ -13,6 +13,8 @@ class MappingDiscoveryService(private val context: Context) {
     private val DISCOVERY_MSG = "MAPPING_SERVER_DISCOVERY"
     private var job: Job? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+    private var serverSocket: DatagramSocket? = null
+    private var clientSocket: DatagramSocket? = null
 
     private fun getBroadcastAddresses(): List<InetAddress> {
         val addresses = mutableListOf<InetAddress>()
@@ -56,13 +58,16 @@ class MappingDiscoveryService(private val context: Context) {
                 multicastLock?.setReferenceCounted(true)
                 multicastLock?.acquire()
 
-                val socket = DatagramSocket(DISCOVERY_PORT)
-                socket.broadcast = true
+                serverSocket = DatagramSocket(null).apply {
+                    reuseAddress = true
+                    bind(java.net.InetSocketAddress(DISCOVERY_PORT))
+                    broadcast = true
+                }
                 val buffer = ByteArray(1024)
                 
                 while (isActive) {
                     val packet = DatagramPacket(buffer, buffer.size)
-                    socket.receive(packet)
+                    serverSocket?.receive(packet)
                     val message = String(packet.data, 0, packet.length)
                     
                         if (message == DISCOVERY_MSG) {
@@ -73,9 +78,11 @@ class MappingDiscoveryService(private val context: Context) {
                         // Responder al cliente para confirmar presencia usando SU PUERTO
                         val response = "MAPPING_SERVER_HERE".toByteArray()
                         val responsePacket = DatagramPacket(response, response.size, packet.address, packet.port)
-                        socket.send(responsePacket)
+                        serverSocket?.send(responsePacket)
                     }
                 }
+            } catch (e: java.net.SocketException) {
+                // Socket was likely closed, normal during shutdown
             } catch (e: Exception) {
                 Log.e("MappingDiscovery", "Error en servidor de descubrimiento: ${e.message}")
             } finally {
@@ -97,8 +104,8 @@ class MappingDiscoveryService(private val context: Context) {
                 multicastLock?.setReferenceCounted(true)
                 multicastLock?.acquire()
 
-                val socket = DatagramSocket()
-                socket.broadcast = true
+                clientSocket = DatagramSocket()
+                clientSocket?.broadcast = true
                 val message = DISCOVERY_MSG.toByteArray()
                 val targetAddresses = getBroadcastAddresses().toMutableList()
                 
@@ -122,7 +129,7 @@ class MappingDiscoveryService(private val context: Context) {
                         for (addr in targetAddresses) {
                             try {
                                 val packet = DatagramPacket(message, message.size, addr, DISCOVERY_PORT)
-                                socket.send(packet)
+                                clientSocket?.send(packet)
                             } catch (e: Exception) {
                                 Log.w("MappingDiscovery", "Failed to send to $addr: ${e.message}")
                             }
@@ -134,12 +141,12 @@ class MappingDiscoveryService(private val context: Context) {
                 // Esperar respuesta (Listen for 6 seconds total)
                 val buffer = ByteArray(1024)
                 val responsePacket = DatagramPacket(buffer, buffer.size)
-                socket.soTimeout = 6000 
+                clientSocket?.soTimeout = 6000 
                 
                 val startTime = System.currentTimeMillis()
                 while (isActive && (System.currentTimeMillis() - startTime < 6000)) {
                     try {
-                        socket.receive(responsePacket)
+                        clientSocket?.receive(responsePacket)
                         val response = String(responsePacket.data, 0, responsePacket.length)
                         if (response == "MAPPING_SERVER_HERE") {
                             val ip = responsePacket.address.hostAddress
@@ -151,11 +158,14 @@ class MappingDiscoveryService(private val context: Context) {
                         }
                     } catch (e: java.net.SocketTimeoutException) {
                         break 
+                    } catch (e: java.net.SocketException) {
+                        // Socket closed
+                        break
                     } catch (e: Exception) {
                         Log.e("MappingDiscovery", "Error receiving: ${e.message}")
                     }
                 }
-                socket.close()
+                clientSocket?.close()
             } catch (e: Exception) {
                 Log.e("MappingDiscovery", "Error en búsqueda de servidores: ${e.message}")
             } finally {
@@ -171,6 +181,8 @@ class MappingDiscoveryService(private val context: Context) {
 
     fun stop() {
         job?.cancel()
+        serverSocket?.close()
+        clientSocket?.close()
         if (multicastLock?.isHeld == true) {
             multicastLock?.release()
         }

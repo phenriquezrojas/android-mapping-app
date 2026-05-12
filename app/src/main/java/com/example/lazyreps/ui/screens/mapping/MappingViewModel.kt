@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import org.json.JSONArray
 import org.json.JSONObject
 import javax.inject.Inject
@@ -147,11 +149,54 @@ class MappingViewModel @Inject constructor(
 
     // [Phase 5] Removed player map. Single player managed by VideoController.
     private var playAllVideosJob: Job? = null
-    var renderer: MappingRenderer? = null
+    private var heartbeatJob: Job? = null
+    private var gracePeriodJob: Job? = null
+    private var isReconnecting = false
+    private var reconnectJob: Job? = null
+    private var renderer: MappingRenderer? = null
 
     // Networking
     private val networkManager = MappingNetworkManager(this)
     val cameraStreamManager = CameraStreamManager(context) // Internal but exposed for Lifecycle binding
+
+    init {
+        if (_uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
+            startHeartbeat()
+        }
+    }
+
+    private fun startHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = viewModelScope.launch(Dispatchers.IO) {
+            while (isActive && _uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
+                delay(30000) // 30 seconds
+                if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+                    Log.d("MappingVM", "Sending Heartbeat PING...")
+                    networkManager.sendCommand(MappingCommand.Ping())
+                }
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+
+    fun updateConnectionStatus(status: ConnectionStatus) {
+        viewModelScope.launch(Dispatchers.Main) {
+            Log.d("MappingViewModel", "updateConnectionStatus: $status")
+            _uiState.update { it.copy(connectionStatus = status) }
+            
+            if (status == ConnectionStatus.CONNECTED) {
+                gracePeriodJob?.cancel()
+                gracePeriodJob = null
+                startHeartbeat()
+            } else if (status == ConnectionStatus.DISCONNECTED || status == ConnectionStatus.ERROR) {
+                stopHeartbeat()
+            }
+        }
+    }
 
     private val updateReceiver = object : android.content.BroadcastReceiver() {
         override fun onReceive(ctx: Context?, intent: android.content.Intent?) {
@@ -196,15 +241,23 @@ class MappingViewModel @Inject constructor(
         "BPM_Debug" to listOf("u_bpm", "u_BeatPhase"),
         "shader_neon_text" to listOf("u_Intensity", "u_ColorR", "u_ColorG", "u_ColorB", "u_Scale"),
         "Arcoiris" to listOf("u_nl1", "u_nl2", "u_nl3"),
-        "AsciiTunnel" to listOf("u_Speed", "u_ColorR", "u_ColorG", "u_ColorB", "u_Scale")
+        "AsciiTunnel" to listOf("u_Speed", "u_ColorR", "u_ColorG", "u_ColorB", "u_Scale"),
+        "SacredGeometry" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "FlowerOfLife" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "Kaleidoscopio" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "ElectricField" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "DiscoBall" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "PurpleFlower" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "MoonHalo" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "FlagStone" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase")
     )
     
     // Performance Functions
-    fun setTargetFPS(fps: Int) {
-        Log.d("MappingVM", "setTargetFPS: $fps (Mode: ${_uiState.value.executionMode})")
+    fun setTargetFPS(fps: Int, fromRemote: Boolean = false) {
+        Log.d("MappingVM", "setTargetFPS: $fps (Mode: ${_uiState.value.executionMode}, fromRemote: $fromRemote)")
         _uiState.update { it.copy(targetFPS = fps) }
         
-        if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+        if (_uiState.value.executionMode == ExecutionMode.CLIENT && !fromRemote) {
             dispatchCommand(MappingCommand.SetTargetFPS(fps))
         } else {
             viewModelScope.launch {
@@ -218,11 +271,11 @@ class MappingViewModel @Inject constructor(
         }
     }
 
-    fun setGlobalBPM(bpm: Float) {
-        Log.d("MappingVM", "setGlobalBPM: $bpm (Mode: ${_uiState.value.executionMode})")
+    fun setGlobalBPM(bpm: Float, fromRemote: Boolean = false) {
+        Log.d("MappingVM", "setGlobalBPM: $bpm (Mode: ${_uiState.value.executionMode}, fromRemote: $fromRemote)")
         _uiState.update { it.copy(globalBPM = bpm) }
         
-        if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+        if (_uiState.value.executionMode == ExecutionMode.CLIENT && !fromRemote) {
             dispatchCommand(MappingCommand.SetGlobalBPM(bpm))
         } else {
             viewModelScope.launch {
@@ -540,24 +593,6 @@ class MappingViewModel @Inject constructor(
             } catch (e: Exception) {
                 reportError("Failed to connect to server: ${e.message}")
                 _uiState.update { it.copy(connectionStatus = ConnectionStatus.ERROR) }
-            }
-        }
-    }
-
-    fun updateConnectionStatus(status: ConnectionStatus) {
-        _uiState.update { it.copy(connectionStatus = status) }
-        
-        // Auto-reconnect logic for Clients
-        if (status == ConnectionStatus.DISCONNECTED && _uiState.value.executionMode == ExecutionMode.CLIENT) {
-            val serverIp = _uiState.value.serverIp
-            if (serverIp != null && serverIp != "Searching..." && serverIp != "Local Server") {
-                Log.d("MappingViewModel", "Connection lost. Attempting auto-reconnect to $serverIp...")
-                viewModelScope.launch {
-                    kotlinx.coroutines.delay(3000) // Wait 3s before retry
-                    if (_uiState.value.connectionStatus == ConnectionStatus.DISCONNECTED) {
-                        connectToRemoteServer(serverIp)
-                    }
-                }
             }
         }
     }
@@ -1937,10 +1972,10 @@ class MappingViewModel @Inject constructor(
                 setActiveDeck(command.deckIndex, fromRemote = true)
             }
             is MappingCommand.SetTargetFPS -> {
-                setTargetFPS(command.fps)
+                setTargetFPS(command.fps, fromRemote = true)
             }
             is MappingCommand.SetGlobalBPM -> {
-                setGlobalBPM(command.bpm)
+                setGlobalBPM(command.bpm, fromRemote = true)
             }
             is MappingCommand.SetShaderText -> {
                 updateShaderText(command.surfaceId, command.text, fromRemote = true)
@@ -3402,16 +3437,33 @@ class MappingViewModel @Inject constructor(
         }
     }
 
-    private var isReconnecting = false
-    private var reconnectJob: kotlinx.coroutines.Job? = null
-
     override fun onClientDisconnected(address: String) {
         viewModelScope.launch(Dispatchers.Main) {
             Log.d("MappingViewModel", "Disconnected: $address")
+            
             if (_uiState.value.executionMode == ExecutionMode.CLIENT) {
+                // Start Grace Period before showing dialog
+                updateConnectionStatus(ConnectionStatus.CONNECTING) // Set to "Yellow"
+                
+                gracePeriodJob?.cancel()
+                gracePeriodJob = viewModelScope.launch {
+                    Log.d("MappingVM", "Entering Grace Period (15s)...")
+                    delay(15000) // 15s Grace Period
+                    
+                    if (_uiState.value.connectionStatus != ConnectionStatus.CONNECTED) {
+                        Log.d("MappingVM", "Grace Period expired. Showing dialog.")
+                        updateConnectionStatus(ConnectionStatus.DISCONNECTED)
+                        _uiState.update { it.copy(showDisconnectDialog = true) }
+                    }
+                }
+                
+                // Trigger immediate attempt
+                val currentIp = _uiState.value.serverIp
+                if (currentIp != null && currentIp != "Local Server") {
+                    attemptReconnect(currentIp)
+                }
+            } else {
                 updateConnectionStatus(ConnectionStatus.DISCONNECTED)
-                // [v1.18.9] Show disconnect dialog instead of silent auto-reconnect
-                _uiState.update { it.copy(showDisconnectDialog = true) }
             }
         }
     }
@@ -3423,8 +3475,9 @@ class MappingViewModel @Inject constructor(
     }
 
     fun confirmDisconnect() {
-        reconnectJob?.cancel()
-        reconnectJob = null
+        gracePeriodJob?.cancel()
+        gracePeriodJob = null
+        stopHeartbeat()
         isReconnecting = false
         networkManager.stopAll()
         clearAll()
@@ -3436,7 +3489,6 @@ class MappingViewModel @Inject constructor(
             decks = emptyList(),
             activeDeckIndex = 0
         )}
-        Log.d("MappingViewModel", "User confirmed disconnect. State cleared.")
     }
 
     private fun attemptReconnect(address: String) {

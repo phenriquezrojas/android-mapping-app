@@ -25,6 +25,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import com.example.lazyreps.ui.screens.mapping.PremiumDialog
 import android.net.Uri
+import androidx.compose.foundation.shape.CircleShape
+import com.example.lazyreps.ui.screens.mapping.ConnectionStatus
 
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
@@ -86,7 +88,8 @@ fun DashboardScreen(
                 targetFPS = uiState.targetFPS,
                 globalBPM = uiState.globalBPM,
                 onFpsChange = { viewModel.setTargetFPS(it) },
-                onBpmChange = { viewModel.setGlobalBPM(it) }
+                onBpmChange = { viewModel.setGlobalBPM(it) },
+                connectionStatus = uiState.connectionStatus
             )
 
             // Grid
@@ -371,7 +374,8 @@ fun DashboardHeader(
     targetFPS: Int,
     globalBPM: Float,
     onFpsChange: (Int) -> Unit,
-    onBpmChange: (Float) -> Unit
+    onBpmChange: (Float) -> Unit,
+    connectionStatus: ConnectionStatus = ConnectionStatus.DISCONNECTED
 ) {
     var showPerfControls by remember { mutableStateOf(false) }
 
@@ -403,6 +407,21 @@ fun DashboardHeader(
                 }
                 
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Connection Status Indicator
+                    val connectionColor = when (connectionStatus) {
+                        ConnectionStatus.CONNECTED -> Color(0xFF00FF00)
+                        ConnectionStatus.CONNECTING -> Color(0xFFFFD600)
+                        else -> Color(0xFFFF1744)
+                    }
+                    
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(connectionColor, shape = CircleShape)
+                    )
+                    
+                    Spacer(modifier = Modifier.width(8.dp))
+
                     // Performance Toggle
                     IconButton(onClick = { showPerfControls = !showPerfControls }) {
                         Icon(

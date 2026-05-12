@@ -418,6 +418,14 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
         shaderResourceMap["shader_neon_text"] = R.raw.shader_neon_text
         shaderResourceMap["Arcoiris"] = R.raw.shader_arcoiris
         shaderResourceMap["AsciiTunnel"] = R.raw.shader_ascii_tunnel
+        shaderResourceMap["SacredGeometry"] = R.raw.shader_sacred_geometry
+        shaderResourceMap["FlowerOfLife"] = R.raw.shader_flower_of_life
+        shaderResourceMap["Kaleidoscopio"] = R.raw.shader_kaleidoscopio
+        shaderResourceMap["ElectricField"] = R.raw.shader_electric_field
+        shaderResourceMap["DiscoBall"] = R.raw.shader_disco_ball
+        shaderResourceMap["PurpleFlower"] = R.raw.shader_purple_flower
+        shaderResourceMap["MoonHalo"] = R.raw.shader_moon_halo
+        shaderResourceMap["FlagStone"] = R.raw.shader_flag_stone
         
         Log.d("MappingRenderer", "Shader resource map initialized with ${shaderResourceMap.size} shaders. Lazy loading enabled.")
     }
@@ -979,9 +987,9 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
                  if (uTex != -1) GLES20.glUniform1i(uTex, 0)
             }
             
-            // [v1.18.37] Circular Clock: Wrap time every 60s to maintain high floating point precision
+            // [v1.18.37] Circular Clock: Wrap time every 3600s (1h) to maintain high floating point precision without frequent visual glitches
             val rawTime = (SystemClock.elapsedRealtime() - startTime) / 1000f
-            val time = rawTime % 60.0f 
+            val time = rawTime % 3600.0f 
             
             val uTime = getUniLoc(pId, "u_time"); if(uTime!=-1) GLES20.glUniform1f(uTime, time)
             val uRes = getUniLoc(pId, "u_resolution"); if(uRes!=-1) GLES20.glUniform2f(uRes, screenWidth, screenHeight)
