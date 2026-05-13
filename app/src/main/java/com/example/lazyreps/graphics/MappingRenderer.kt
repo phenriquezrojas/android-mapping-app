@@ -57,6 +57,9 @@ class MappingRenderer(
     // Debug Logging
     private var lastFpsLogTime: Long = System.nanoTime()
 
+    // [v1.20] Nanoleaf Emulator colors (16 vec3 = 48 floats)
+    var nanoleafColors: FloatArray = FloatArray(48)
+
 
 
     private var program = 0
@@ -1001,6 +1004,22 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
             
             slot.shaderParameters.forEach { (k, v) ->
                 val loc = getUniLoc(pId, k); if (loc != -1) GLES20.glUniform1f(loc, v)
+            }
+            
+            // [v1.20] Nanoleaf Uniform Injection
+            if (shaderId == "shader_nanoleaf") {
+                val colors = nanoleafColors
+                for (i in 0 until 16) {
+                    val loc = getUniLoc(pId, "u_panelColor$i")
+                    if (loc != -1) {
+                        GLES20.glUniform3f(
+                            loc,
+                            colors[i * 3] / 255f,
+                            colors[i * 3 + 1] / 255f,
+                            colors[i * 3 + 2] / 255f
+                        )
+                    }
+                }
             }
 
             // [v2.1] Mask Injection for Aware Shaders

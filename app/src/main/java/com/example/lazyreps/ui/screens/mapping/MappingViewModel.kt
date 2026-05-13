@@ -230,6 +230,9 @@ class MappingViewModel @Inject constructor(
     private val redoStack = java.util.ArrayDeque<Pair<MappingCommand, MappingCommand>>()
     private val MAX_HISTORY = 50
 
+    // [v1.20] Nanoleaf Emulator State
+    val nanoleafColorBuffer = FloatArray(48) // 16 panels * 3 RGB values
+
     val shaderRegistry = mapOf(
         "FireEnergy" to listOf("u_intensity", "u_flicker", "u_flow", "u_scale"),
         "GraffitiMask" to listOf("u_Scale", "u_Intensity", "u_Speed"),
@@ -249,7 +252,8 @@ class MappingViewModel @Inject constructor(
         "DiscoBall" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
         "PurpleFlower" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
         "MoonHalo" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
-        "FlagStone" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase")
+        "FlagStone" to listOf("u_Scale", "u_intensity", "u_Speed", "u_bpm", "u_BeatPhase"),
+        "shader_nanoleaf" to listOf("u_pattern", "u_panelCount", "u_gap", "u_rotation")
     )
     
     // Performance Functions
@@ -617,6 +621,7 @@ class MappingViewModel @Inject constructor(
             // Also push performance properties directly (Surgical Sync)
             r.targetFPS = ui.targetFPS
             r.bpm = ui.globalBPM
+            r.nanoleafColors = this.nanoleafColorBuffer
         }
         // Safety reset for UI spinner [v1.14.1]
         _uiState.update { it.copy(isLoading = false) }
