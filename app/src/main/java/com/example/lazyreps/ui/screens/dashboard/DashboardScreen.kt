@@ -305,23 +305,43 @@ fun DashboardScreen(
                 val supportsText = shaderId == "shader_neon_text" || shaderId == "GraffitiMask"
                 val textValue = if (supportsText) clip.shaderText ?: "GRAFFITI" else null
                 
-                ShaderControlsDialog(
-                    clipName = clip.name,
-                    shaderId = shaderId,
-                    parameters = params,
-                    availableParams = availableInfo,
-                    currentText = textValue,
-                    onTextChange = { txt ->
-                        // 1. Update Saved Clip State
-                        val newClip = clip.copy(shaderText = txt)
-                        viewModel.updateClipInSlot(surfaceId, slotIndex, newClip)
-                        
-                        // 2. Update Live Render (if active)
-                        // For Text, we update regardless of detailed active check because it's specific
-                        viewModel.updateShaderText(surfaceId, txt)
-                    },
-                    onParamChange = { name, value ->
-                        // 1. Update Saved Clip State
+                // [v1.20] Routing for Nanoleaf Emulator UI
+                if (shaderId == "shader_nanoleaf") {
+                    NanoleafConfigDialog(
+                        clipName = clip.name,
+                        parameters = params,
+                        isNanoleafConnected = uiState.isNanoleafConnected,
+                        onParamChange = { name, value ->
+                            val newParams = params.toMutableMap()
+                            newParams[name] = value
+                            val newClip = clip.copy(shaderParameters = newParams)
+                            viewModel.updateClipInSlot(surfaceId, slotIndex, newClip)
+                            viewModel.updateShaderParameter(surfaceId, name, value)
+                        },
+                        onEditLayout = {
+                            // Phase 5: Trigger advanced layout editor
+                            showShaderControls = null
+                        },
+                        onDismiss = { showShaderControls = null }
+                    )
+                } else {
+                    ShaderControlsDialog(
+                        clipName = clip.name,
+                        shaderId = shaderId,
+                        parameters = params,
+                        availableParams = availableInfo,
+                        currentText = textValue,
+                        onTextChange = { txt ->
+                            // 1. Update Saved Clip State
+                            val newClip = clip.copy(shaderText = txt)
+                            viewModel.updateClipInSlot(surfaceId, slotIndex, newClip)
+                            
+                            // 2. Update Live Render (if active)
+                            // For Text, we update regardless of detailed active check because it's specific
+                            viewModel.updateShaderText(surfaceId, txt)
+                        },
+                        onParamChange = { name, value ->
+                            // 1. Update Saved Clip State
                         val newParams = params.toMutableMap()
                         newParams[name] = value
                         val newClip = clip.copy(shaderParameters = newParams)
@@ -335,6 +355,7 @@ fun DashboardScreen(
                     },
                     onDismiss = { showShaderControls = null }
                 )
+                } // End of else (not shader_nanoleaf)
             } else {
                 showShaderControls = null // Invalid state fallback
             }
