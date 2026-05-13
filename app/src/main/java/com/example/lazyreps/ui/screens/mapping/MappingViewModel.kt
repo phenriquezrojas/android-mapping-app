@@ -141,7 +141,8 @@ fun MappingUiState.toMappingState(): MappingState {
 @HiltViewModel
 class MappingViewModel @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val videoController: VideoController // [Phase 5] Injected Controller
+    private val videoController: VideoController, // [Phase 5] Injected Controller
+    val nanoleafManager: com.example.lazyreps.nanoleaf.NanoleafManager
 ) : ViewModel(), NetworkCallback {
 
     private val _uiState = MutableStateFlow(MappingUiState())
@@ -229,9 +230,6 @@ class MappingViewModel @Inject constructor(
     private val undoStack = java.util.ArrayDeque<Pair<MappingCommand, MappingCommand>>()
     private val redoStack = java.util.ArrayDeque<Pair<MappingCommand, MappingCommand>>()
     private val MAX_HISTORY = 50
-
-    // [v1.20] Nanoleaf Emulator State
-    val nanoleafColorBuffer = FloatArray(48) // 16 panels * 3 RGB values
 
     val shaderRegistry = mapOf(
         "FireEnergy" to listOf("u_intensity", "u_flicker", "u_flow", "u_scale"),
@@ -487,6 +485,7 @@ class MappingViewModel @Inject constructor(
         stopAllNetworking()
         // [Phase 5] Release via controller
         videoController.release()
+        nanoleafManager.shutdown()
         try {
             context.unregisterReceiver(updateReceiver)
         } catch (e: Exception) {}
@@ -621,7 +620,7 @@ class MappingViewModel @Inject constructor(
             // Also push performance properties directly (Surgical Sync)
             r.targetFPS = ui.targetFPS
             r.bpm = ui.globalBPM
-            r.nanoleafColors = this.nanoleafColorBuffer
+            r.nanoleafColors = nanoleafManager.colorBuffer
         }
         // Safety reset for UI spinner [v1.14.1]
         _uiState.update { it.copy(isLoading = false) }
@@ -3556,6 +3555,10 @@ class MappingViewModel @Inject constructor(
 
     override fun onHttpRequest(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response? {
         val uri = session.uri ?: ""
+        
+        // [v1.20] Nanoleaf Emulator Interception
+        nanoleafManager.handleHttpRequest(session)?.let { return it }
+        
         if (uri == "/thumbnail") {
             val rawPath = session.parms["path"] ?: return null
             val path = URLDecoder.decode(rawPath, "UTF-8")
