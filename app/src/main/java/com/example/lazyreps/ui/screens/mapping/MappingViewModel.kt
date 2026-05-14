@@ -117,7 +117,8 @@ data class MappingUiState(
     val globalBPM: Float = 120f,
     val isLoading: Boolean = false,
     val discoveredServers: List<String> = emptyList(), // [v1.12.0] For multi-server selection
-    val showDisconnectDialog: Boolean = false // [v1.18.9] Disconnect confirmation dialog
+    val showDisconnectDialog: Boolean = false, // [v1.18.9] Disconnect confirmation dialog
+    val isNanoleafConnected: Boolean = false // [v1.20] Nanoleaf connectivity status
 )
 
 enum class ExecutionMode {
@@ -163,6 +164,13 @@ class MappingViewModel @Inject constructor(
     init {
         if (_uiState.value.connectionStatus == ConnectionStatus.CONNECTED) {
             startHeartbeat()
+        }
+        
+        // [v1.20] Collect Nanoleaf Connection Status
+        viewModelScope.launch {
+            nanoleafManager.isConnected.collect { connected ->
+                _uiState.update { it.copy(isNanoleafConnected = connected) }
+            }
         }
     }
 

@@ -22,31 +22,68 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.Fill
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.ExperimentalTextApi
+import androidx.compose.ui.text.drawText
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
-import com.example.lazyreps.core.models.MappingSurface
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.ceil
+import kotlin.math.sqrt
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalTextApi::class)
 @Composable
 fun NanoleafEditorScreen(
-    surface: MappingSurface,
-    onUpdateSurface: (MappingSurface) -> Unit,
+    parameters: Map<String, Float>,
+    onUpdateParameters: (Map<String, Float>) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var bgImageBitmap by remember { mutableStateOf<ImageBitmap?>(null) }
     
-    // MappingSurface uses: 0,1=TopLeft, 2,3=TopRight, 4,5=BottomRight, 6,7=BottomLeft
-    var tl by remember { mutableStateOf(Offset(surface.corners[0], surface.corners[1])) }
-    var tr by remember { mutableStateOf(Offset(surface.corners[2], surface.corners[3])) }
-    var br by remember { mutableStateOf(Offset(surface.corners[4], surface.corners[5])) }
-    var bl by remember { mutableStateOf(Offset(surface.corners[6], surface.corners[7])) }
+    val textMeasurer = rememberTextMeasurer()
+
+    val panelCount = (parameters["u_panelCount"] ?: 16f).toInt().coerceIn(1, 16)
+    val pattern = parameters["u_pattern"] ?: 0f
+    val isCustom = (parameters["u_customLayout"] ?: 0f) > 0.5f
+
+    // We keep an array of 16 offsets for the positions
+    val panelPositions = remember {
+        val posArray = Array(16) { Offset(0.5f, 0.5f) }
+        for (i in 0 until 16) {
+            if (isCustom) {
+                val x = parameters["u_p${i}x"] ?: 0.5f
+                val y = parameters["u_p${i}y"] ?: 0.5f
+                posArray[i] = Offset(x, y)
+            } else {
+                // Procedural initialization matching the shader logic
+                val n = panelCount.toFloat().coerceAtLeast(1f)
+                val colsFloat = ceil(sqrt(n))
+                val cols = colsFloat.toInt()
+                val rows = ceil(n / colsFloat).toInt()
+                
+                if (pattern < 0.5f) { // GRID
+                    val col = (i % cols).toFloat()
+                    val row = (i / cols).toFloat()
+                    posArray[i] = Offset((col + 0.5f) / colsFloat, (row + 0.5f) / rows.toFloat())
+                } else { // HONEYCOMB
+                    val row = i / cols
+                    val col = i % cols
+                    val xOffset = (row % 2).toFloat() * (0.5f / colsFloat)
+                    posArray[i] = Offset((col.toFloat() + 0.5f) / colsFloat + xOffset, (row.toFloat() + 0.5f) / rows.toFloat())
+                }
+            }
+        }
+        mutableStateListOf(*posArray)
+    }
 
     val imagePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -66,7 +103,7 @@ fun NanoleafEditorScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Calibración Fotográfica") },
+                title = { Text("Calibración Libre ($panelCount Paneles)") },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
                         Icon(Icons.Default.ArrowBack, "Volver")
@@ -77,17 +114,17 @@ fun NanoleafEditorScreen(
                         Icon(Icons.Default.ImageIcon, "Cargar Referencia")
                     }
                     Button(onClick = {
-                        val newCorners = floatArrayOf(
-                            tl.x, tl.y,
-                            tr.x, tr.y,
-                            br.x, br.y,
-                            bl.x, bl.y
-                        )
-                        val newSurface = surface.copy(corners = newCorners)
-                        onUpdateSurface(newSurface)
+                        // Gather custom positions
+                        val updates = mutableMapOf<String, Float>()
+                        updates["u_customLayout"] = 1.0f
+                        for (i in 0 until 16) {
+                            updates["u_p${i}x"] = panelPositions[i].x
+                            updates["u_p${i}y"] = panelPositions[i].y
+                        }
+                        onUpdateParameters(updates)
                         onClose()
                     }) {
-                        Text("Guardar")
+                        Text("Guardar Layout")
                     }
                 }
             )
@@ -113,7 +150,7 @@ fun NanoleafEditorScreen(
                 }
             }
 
-            // Interactive Canvas
+            // Interactive Canvas for Panels
             Canvas(
                 modifier = Modifier
                     .fillMaxSize()
@@ -125,28 +162,31 @@ fun NanoleafEditorScreen(
                             onDrag = { change, dragAmount ->
                                 change.consume()
                                 val pos = change.position
-                                // Convert pointer pos to normalized coordinates (0..1)
                                 val normX = pos.x / size.width
                                 val normY = pos.y / size.height
                                 
-                                // Find closest corner (threshold 0.1 normalized)
-                                val threshold = 0.1f
-                                val dTl = Offset(normX - tl.x, normY - tl.y).getDistance()
-                                val dTr = Offset(normX - tr.x, normY - tr.y).getDistance()
-                                val dBr = Offset(normX - br.x, normY - br.y).getDistance()
-                                val dBl = Offset(normX - bl.x, normY - bl.y).getDistance()
+                                // Find closest panel to drag
+                                var closestIdx = -1
+                                var minDist = Float.MAX_VALUE
                                 
-                                val min = minOf(dTl, dTr, dBl, dBr)
-                                if (min < threshold) {
+                                for (i in 0 until panelCount) {
+                                    val dx = normX - panelPositions[i].x
+                                    val dy = normY - panelPositions[i].y
+                                    val d = sqrt(dx*dx + dy*dy)
+                                    if (d < minDist) {
+                                        minDist = d
+                                        closestIdx = i
+                                    }
+                                }
+                                
+                                // Drag threshold
+                                if (closestIdx != -1 && minDist < 0.15f) {
                                     val deltaX = dragAmount.x / size.width
                                     val deltaY = dragAmount.y / size.height
-                                    val dx = Offset(deltaX, deltaY)
-                                    when (min) {
-                                        dTl -> tl += dx
-                                        dTr -> tr += dx
-                                        dBr -> br += dx
-                                        dBl -> bl += dx
-                                    }
+                                    panelPositions[closestIdx] = Offset(
+                                        panelPositions[closestIdx].x + deltaX,
+                                        panelPositions[closestIdx].y + deltaY
+                                    )
                                 }
                             }
                         )
@@ -155,31 +195,52 @@ fun NanoleafEditorScreen(
                 val w = size.width
                 val h = size.height
 
-                val pTl = Offset(tl.x * w, tl.y * h)
-                val pTr = Offset(tr.x * w, tr.y * h)
-                val pBr = Offset(br.x * w, br.y * h)
-                val pBl = Offset(bl.x * w, bl.y * h)
+                val colsFloat = ceil(sqrt(panelCount.toFloat().coerceAtLeast(1f)))
+                val panelRadius = (0.5f / colsFloat) * 0.8f // visual scaling
 
-                // Draw Polygon
-                val path = Path().apply {
-                    moveTo(pTl.x, pTl.y)
-                    lineTo(pTr.x, pTr.y)
-                    lineTo(pBr.x, pBr.y)
-                    lineTo(pBl.x, pBl.y)
-                    close()
-                }
-                
-                drawPath(
-                    path = path,
-                    color = Color.Green,
-                    style = Stroke(width = 4f)
-                )
+                for (i in 0 until panelCount) {
+                    val p = panelPositions[i]
+                    val px = p.x * w
+                    val py = p.y * h
+                    val r = panelRadius * minOf(w, h)
 
-                // Draw Corner Handles (Crosses)
-                val handleRadius = 20f
-                listOf(pTl, pTr, pBl, pBr).forEach { p ->
-                    drawLine(Color.Red, Offset(p.x - handleRadius, p.y), Offset(p.x + handleRadius, p.y), 4f)
-                    drawLine(Color.Red, Offset(p.x, p.y - handleRadius), Offset(p.x, p.y + handleRadius), 4f)
+                    // Draw Shape
+                    if (pattern < 0.5f) {
+                        // Square (Grid)
+                        drawRect(
+                            color = Color(0x884CAF50),
+                            topLeft = Offset(px - r, py - r),
+                            size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
+                            style = Fill
+                        )
+                        drawRect(
+                            color = Color.Green,
+                            topLeft = Offset(px - r, py - r),
+                            size = androidx.compose.ui.geometry.Size(r * 2, r * 2),
+                            style = Stroke(width = 3f)
+                        )
+                    } else {
+                        // Hexagon (Honeycomb) approximation
+                        val hexPath = Path().apply {
+                            for (j in 0 until 6) {
+                                val angle = j * Math.PI / 3.0
+                                val hx = px + r * Math.cos(angle).toFloat()
+                                val hy = py + r * Math.sin(angle).toFloat()
+                                if (j == 0) moveTo(hx, hy) else lineTo(hx, hy)
+                            }
+                            close()
+                        }
+                        drawPath(hexPath, color = Color(0x884CAF50), style = Fill)
+                        drawPath(hexPath, color = Color.Green, style = Stroke(width = 3f))
+                    }
+                    
+                    // Draw ID text
+                    drawText(
+                        textMeasurer = textMeasurer,
+                        text = (i + 1).toString(),
+                        topLeft = Offset(px - 10f, py - 20f),
+                        style = TextStyle(color = Color.White, fontSize = 16.sp)
+                    )
                 }
             }
         }

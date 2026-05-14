@@ -51,7 +51,7 @@ fun DashboardScreen(
     // Shader settings dialog state (SurfaceId, SlotIndex)
     var showShaderControls by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var showCameraFX by remember { mutableStateOf<Pair<String, Int>?>(null) } // [v1.11.0]
-    var showNanoleafEditor by remember { mutableStateOf<String?>(null) } // [v1.20] Nanoleaf Editor state
+    var showNanoleafEditor by remember { mutableStateOf<Pair<String, Int>?>(null) } // [v1.20] Nanoleaf Editor state
     
     val permissionState = rememberMultiplePermissionsState(
         listOf(
@@ -322,7 +322,7 @@ fun DashboardScreen(
                         onEditLayout = {
                             // Phase 5: Trigger advanced layout editor
                             showShaderControls = null
-                            showNanoleafEditor = surfaceId
+                            showNanoleafEditor = Pair(surfaceId, slotIndex)
                         },
                         onDismiss = { showShaderControls = null }
                     )
@@ -388,9 +388,11 @@ fun DashboardScreen(
         
         // [v1.20] Full-Screen Nanoleaf Editor Overlay
         if (showNanoleafEditor != null) {
-            val surfaceId = showNanoleafEditor!!
+            val (surfaceId, slotIndex) = showNanoleafEditor!!
             val surface = uiState.surfaces.find { it.id == surfaceId }
-            if (surface != null) {
+            val clip = activeDeck.layerClips[surfaceId]?.getOrNull(slotIndex)
+            
+            if (surface != null && clip != null) {
                 // To avoid drawing on top of other scaffold elements, we can wrap it in a Dialog or just
                 // render it as a full-screen overlay since this is within the DashboardScreen scaffold.
                 // We'll use a Compose Dialog with no padding to take up the full screen
@@ -402,15 +404,21 @@ fun DashboardScreen(
                     )
                 ) {
                     com.example.lazyreps.ui.screens.nanoleaf.NanoleafEditorScreen(
-                        surface = surface,
-                        onUpdateSurface = { updatedSurface ->
-                            // Use existing network command to update surface coordinates
-                            viewModel.dispatchCommand(
-                                com.example.lazyreps.core.models.MappingCommand.UpdateAllCorners(
-                                    surfaceId = updatedSurface.id,
-                                    corners = updatedSurface.corners
-                                )
-                            )
+                        parameters = clip.shaderParameters,
+                        onUpdateParameters = { updatedParams ->
+                            // Dispatch updates for all modified params
+                            updatedParams.forEach { (key, value) ->
+                                val currentParams = activeDeck.layerClips[surfaceId]?.getOrNull(slotIndex)?.shaderParameters ?: return@forEach
+                                val newClipList = activeDeck.layerClips[surfaceId]!!.toMutableList()
+                                val currentClip = newClipList[slotIndex]
+                                if (currentClip != null) {
+                                    newClipList[slotIndex] = currentClip.copy(
+                                        shaderParameters = currentParams + (key to value)
+                                    )
+                                    viewModel.updateClipInSlot(surfaceId, slotIndex, newClipList[slotIndex]!!)
+                                }
+                                viewModel.updateShaderParameter(surfaceId, key, value)
+                            }
                         },
                         onClose = { showNanoleafEditor = null }
                     )
