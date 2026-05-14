@@ -51,6 +51,7 @@ fun DashboardScreen(
     // Shader settings dialog state (SurfaceId, SlotIndex)
     var showShaderControls by remember { mutableStateOf<Pair<String, Int>?>(null) }
     var showCameraFX by remember { mutableStateOf<Pair<String, Int>?>(null) } // [v1.11.0]
+    var showNanoleafEditor by remember { mutableStateOf<String?>(null) } // [v1.20] Nanoleaf Editor state
     
     val permissionState = rememberMultiplePermissionsState(
         listOf(
@@ -321,6 +322,7 @@ fun DashboardScreen(
                         onEditLayout = {
                             // Phase 5: Trigger advanced layout editor
                             showShaderControls = null
+                            showNanoleafEditor = surfaceId
                         },
                         onDismiss = { showShaderControls = null }
                     )
@@ -381,6 +383,40 @@ fun DashboardScreen(
                     },
                     onDismiss = { showCameraFX = null }
                 )
+            }
+        }
+        
+        // [v1.20] Full-Screen Nanoleaf Editor Overlay
+        if (showNanoleafEditor != null) {
+            val surfaceId = showNanoleafEditor!!
+            val surface = uiState.surfaces.find { it.id == surfaceId }
+            if (surface != null) {
+                // To avoid drawing on top of other scaffold elements, we can wrap it in a Dialog or just
+                // render it as a full-screen overlay since this is within the DashboardScreen scaffold.
+                // We'll use a Compose Dialog with no padding to take up the full screen
+                androidx.compose.ui.window.Dialog(
+                    onDismissRequest = { showNanoleafEditor = null },
+                    properties = androidx.compose.ui.window.DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        decorFitsSystemWindows = false
+                    )
+                ) {
+                    com.example.lazyreps.ui.screens.nanoleaf.NanoleafEditorScreen(
+                        surface = surface,
+                        onUpdateSurface = { updatedSurface ->
+                            // Use existing network command to update surface coordinates
+                            viewModel.dispatchCommand(
+                                com.example.lazyreps.core.models.MappingCommand.UpdateAllCorners(
+                                    surfaceId = updatedSurface.id,
+                                    corners = updatedSurface.corners
+                                )
+                            )
+                        },
+                        onClose = { showNanoleafEditor = null }
+                    )
+                }
+            } else {
+                showNanoleafEditor = null
             }
         }
 }
