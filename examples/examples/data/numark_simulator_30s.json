@@ -1,0 +1,902 @@
+[
+  {
+    "bpm": 128,
+    "beat": 0.0,
+    "energy": 0.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.25,
+    "energy": 0.12
+  },
+  {
+    "bpm": 128,
+    "beat": 0.48,
+    "energy": 0.24
+  },
+  {
+    "bpm": 128,
+    "beat": 0.68,
+    "energy": 0.35
+  },
+  {
+    "bpm": 128,
+    "beat": 0.84,
+    "energy": 0.46
+  },
+  {
+    "bpm": 128,
+    "beat": 0.95,
+    "energy": 0.56
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.66
+  },
+  {
+    "bpm": 128,
+    "beat": 0.98,
+    "energy": 0.74
+  },
+  {
+    "bpm": 128,
+    "beat": 0.91,
+    "energy": 0.82
+  },
+  {
+    "bpm": 128,
+    "beat": 0.78,
+    "energy": 0.88
+  },
+  {
+    "bpm": 128,
+    "beat": 0.6,
+    "energy": 0.93
+  },
+  {
+    "bpm": 128,
+    "beat": 0.38,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.14,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.11,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.35,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.57,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.76,
+    "energy": 0.94
+  },
+  {
+    "bpm": 128,
+    "beat": 0.89,
+    "energy": 0.89
+  },
+  {
+    "bpm": 128,
+    "beat": 0.98,
+    "energy": 0.83
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.76
+  },
+  {
+    "bpm": 128,
+    "beat": 0.96,
+    "energy": 0.68
+  },
+  {
+    "bpm": 128,
+    "beat": 0.86,
+    "energy": 0.58
+  },
+  {
+    "bpm": 128,
+    "beat": 0.71,
+    "energy": 0.48
+  },
+  {
+    "bpm": 128,
+    "beat": 0.51,
+    "energy": 0.37
+  },
+  {
+    "bpm": 128,
+    "beat": 0.28,
+    "energy": 0.26
+  },
+  {
+    "bpm": 128,
+    "beat": 0.03,
+    "energy": 0.14
+  },
+  {
+    "bpm": 128,
+    "beat": 0.22,
+    "energy": 0.02
+  },
+  {
+    "bpm": 128,
+    "beat": 0.45,
+    "energy": 0.1
+  },
+  {
+    "bpm": 128,
+    "beat": 0.66,
+    "energy": 0.22
+  },
+  {
+    "bpm": 128,
+    "beat": 0.82,
+    "energy": 0.33
+  },
+  {
+    "bpm": 128,
+    "beat": 0.94,
+    "energy": 0.44
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.55
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.64
+  },
+  {
+    "bpm": 128,
+    "beat": 0.92,
+    "energy": 0.73
+  },
+  {
+    "bpm": 128,
+    "beat": 0.8,
+    "energy": 0.81
+  },
+  {
+    "bpm": 128,
+    "beat": 0.62,
+    "energy": 0.87
+  },
+  {
+    "bpm": 128,
+    "beat": 0.41,
+    "energy": 0.92
+  },
+  {
+    "bpm": 128,
+    "beat": 0.17,
+    "energy": 0.96
+  },
+  {
+    "bpm": 128,
+    "beat": 0.08,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.32,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.54,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.73,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.88,
+    "energy": 0.95
+  },
+  {
+    "bpm": 128,
+    "beat": 0.97,
+    "energy": 0.9
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.84
+  },
+  {
+    "bpm": 128,
+    "beat": 0.97,
+    "energy": 0.77
+  },
+  {
+    "bpm": 128,
+    "beat": 0.88,
+    "energy": 0.69
+  },
+  {
+    "bpm": 128,
+    "beat": 0.73,
+    "energy": 0.6
+  },
+  {
+    "bpm": 128,
+    "beat": 0.54,
+    "energy": 0.5
+  },
+  {
+    "bpm": 128,
+    "beat": 0.31,
+    "energy": 0.39
+  },
+  {
+    "bpm": 128,
+    "beat": 0.07,
+    "energy": 0.28
+  },
+  {
+    "bpm": 128,
+    "beat": 0.18,
+    "energy": 0.16
+  },
+  {
+    "bpm": 128,
+    "beat": 0.42,
+    "energy": 0.04
+  },
+  {
+    "bpm": 128,
+    "beat": 0.63,
+    "energy": 0.08
+  },
+  {
+    "bpm": 128,
+    "beat": 0.8,
+    "energy": 0.2
+  },
+  {
+    "bpm": 128,
+    "beat": 0.93,
+    "energy": 0.31
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.42
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.53
+  },
+  {
+    "bpm": 128,
+    "beat": 0.93,
+    "energy": 0.63
+  },
+  {
+    "bpm": 128,
+    "beat": 0.82,
+    "energy": 0.72
+  },
+  {
+    "bpm": 128,
+    "beat": 0.65,
+    "energy": 0.79
+  },
+  {
+    "bpm": 128,
+    "beat": 0.44,
+    "energy": 0.86
+  },
+  {
+    "bpm": 128,
+    "beat": 0.21,
+    "energy": 0.92
+  },
+  {
+    "bpm": 128,
+    "beat": 0.04,
+    "energy": 0.96
+  },
+  {
+    "bpm": 128,
+    "beat": 0.29,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.52,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.71,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.86,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.96,
+    "energy": 0.95
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.91
+  },
+  {
+    "bpm": 128,
+    "beat": 0.98,
+    "energy": 0.85
+  },
+  {
+    "bpm": 128,
+    "beat": 0.89,
+    "energy": 0.79
+  },
+  {
+    "bpm": 128,
+    "beat": 0.75,
+    "energy": 0.71
+  },
+  {
+    "bpm": 128,
+    "beat": 0.56,
+    "energy": 0.62
+  },
+  {
+    "bpm": 128,
+    "beat": 0.34,
+    "energy": 0.52
+  },
+  {
+    "bpm": 128,
+    "beat": 0.1,
+    "energy": 0.41
+  },
+  {
+    "bpm": 128,
+    "beat": 0.15,
+    "energy": 0.3
+  },
+  {
+    "bpm": 128,
+    "beat": 0.39,
+    "energy": 0.18
+  },
+  {
+    "bpm": 128,
+    "beat": 0.61,
+    "energy": 0.06
+  },
+  {
+    "bpm": 128,
+    "beat": 0.78,
+    "energy": 0.06
+  },
+  {
+    "bpm": 128,
+    "beat": 0.91,
+    "energy": 0.17
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.29
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.4
+  },
+  {
+    "bpm": 128,
+    "beat": 0.95,
+    "energy": 0.51
+  },
+  {
+    "bpm": 128,
+    "beat": 0.84,
+    "energy": 0.61
+  },
+  {
+    "bpm": 128,
+    "beat": 0.68,
+    "energy": 0.7
+  },
+  {
+    "bpm": 128,
+    "beat": 0.47,
+    "energy": 0.78
+  },
+  {
+    "bpm": 128,
+    "beat": 0.24,
+    "energy": 0.85
+  },
+  {
+    "bpm": 128,
+    "beat": 0.01,
+    "energy": 0.91
+  },
+  {
+    "bpm": 128,
+    "beat": 0.26,
+    "energy": 0.95
+  },
+  {
+    "bpm": 128,
+    "beat": 0.49,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.69,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.85,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.95,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.96
+  },
+  {
+    "bpm": 128,
+    "beat": 0.98,
+    "energy": 0.92
+  },
+  {
+    "bpm": 128,
+    "beat": 0.91,
+    "energy": 0.87
+  },
+  {
+    "bpm": 128,
+    "beat": 0.77,
+    "energy": 0.8
+  },
+  {
+    "bpm": 128,
+    "beat": 0.59,
+    "energy": 0.72
+  },
+  {
+    "bpm": 128,
+    "beat": 0.37,
+    "energy": 0.63
+  },
+  {
+    "bpm": 128,
+    "beat": 0.13,
+    "energy": 0.54
+  },
+  {
+    "bpm": 128,
+    "beat": 0.12,
+    "energy": 0.43
+  },
+  {
+    "bpm": 128,
+    "beat": 0.36,
+    "energy": 0.32
+  },
+  {
+    "bpm": 128,
+    "beat": 0.58,
+    "energy": 0.2
+  },
+  {
+    "bpm": 128,
+    "beat": 0.76,
+    "energy": 0.09
+  },
+  {
+    "bpm": 128,
+    "beat": 0.9,
+    "energy": 0.03
+  },
+  {
+    "bpm": 128,
+    "beat": 0.98,
+    "energy": 0.15
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.27
+  },
+  {
+    "bpm": 128,
+    "beat": 0.96,
+    "energy": 0.38
+  },
+  {
+    "bpm": 128,
+    "beat": 0.85,
+    "energy": 0.49
+  },
+  {
+    "bpm": 128,
+    "beat": 0.7,
+    "energy": 0.59
+  },
+  {
+    "bpm": 128,
+    "beat": 0.5,
+    "energy": 0.68
+  },
+  {
+    "bpm": 128,
+    "beat": 0.27,
+    "energy": 0.77
+  },
+  {
+    "bpm": 128,
+    "beat": 0.02,
+    "energy": 0.84
+  },
+  {
+    "bpm": 128,
+    "beat": 0.22,
+    "energy": 0.9
+  },
+  {
+    "bpm": 128,
+    "beat": 0.46,
+    "energy": 0.94
+  },
+  {
+    "bpm": 128,
+    "beat": 0.66,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.83,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.94,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.92,
+    "energy": 0.93
+  },
+  {
+    "bpm": 128,
+    "beat": 0.79,
+    "energy": 0.88
+  },
+  {
+    "bpm": 128,
+    "beat": 0.62,
+    "energy": 0.81
+  },
+  {
+    "bpm": 128,
+    "beat": 0.4,
+    "energy": 0.74
+  },
+  {
+    "bpm": 128,
+    "beat": 0.17,
+    "energy": 0.65
+  },
+  {
+    "bpm": 128,
+    "beat": 0.08,
+    "energy": 0.55
+  },
+  {
+    "bpm": 128,
+    "beat": 0.33,
+    "energy": 0.45
+  },
+  {
+    "bpm": 128,
+    "beat": 0.55,
+    "energy": 0.34
+  },
+  {
+    "bpm": 128,
+    "beat": 0.74,
+    "energy": 0.23
+  },
+  {
+    "bpm": 128,
+    "beat": 0.88,
+    "energy": 0.11
+  },
+  {
+    "bpm": 128,
+    "beat": 0.97,
+    "energy": 0.01
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.13
+  },
+  {
+    "bpm": 128,
+    "beat": 0.97,
+    "energy": 0.25
+  },
+  {
+    "bpm": 128,
+    "beat": 0.87,
+    "energy": 0.36
+  },
+  {
+    "bpm": 128,
+    "beat": 0.72,
+    "energy": 0.47
+  },
+  {
+    "bpm": 128,
+    "beat": 0.53,
+    "energy": 0.57
+  },
+  {
+    "bpm": 128,
+    "beat": 0.3,
+    "energy": 0.67
+  },
+  {
+    "bpm": 128,
+    "beat": 0.06,
+    "energy": 0.75
+  },
+  {
+    "bpm": 128,
+    "beat": 0.19,
+    "energy": 0.83
+  },
+  {
+    "bpm": 128,
+    "beat": 0.43,
+    "energy": 0.89
+  },
+  {
+    "bpm": 128,
+    "beat": 0.64,
+    "energy": 0.94
+  },
+  {
+    "bpm": 128,
+    "beat": 0.81,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.93,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 0.93,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.81,
+    "energy": 0.94
+  },
+  {
+    "bpm": 128,
+    "beat": 0.64,
+    "energy": 0.89
+  },
+  {
+    "bpm": 128,
+    "beat": 0.43,
+    "energy": 0.82
+  },
+  {
+    "bpm": 128,
+    "beat": 0.2,
+    "energy": 0.75
+  },
+  {
+    "bpm": 128,
+    "beat": 0.05,
+    "energy": 0.67
+  },
+  {
+    "bpm": 128,
+    "beat": 0.3,
+    "energy": 0.57
+  },
+  {
+    "bpm": 128,
+    "beat": 0.52,
+    "energy": 0.47
+  },
+  {
+    "bpm": 128,
+    "beat": 0.72,
+    "energy": 0.36
+  },
+  {
+    "bpm": 128,
+    "beat": 0.87,
+    "energy": 0.25
+  },
+  {
+    "bpm": 128,
+    "beat": 0.96,
+    "energy": 0.13
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 0.01
+  },
+  {
+    "bpm": 128,
+    "beat": 0.97,
+    "energy": 0.11
+  },
+  {
+    "bpm": 128,
+    "beat": 0.89,
+    "energy": 0.23
+  },
+  {
+    "bpm": 128,
+    "beat": 0.75,
+    "energy": 0.34
+  },
+  {
+    "bpm": 128,
+    "beat": 0.56,
+    "energy": 0.45
+  },
+  {
+    "bpm": 128,
+    "beat": 0.33,
+    "energy": 0.56
+  },
+  {
+    "bpm": 128,
+    "beat": 0.09,
+    "energy": 0.65
+  },
+  {
+    "bpm": 128,
+    "beat": 0.16,
+    "energy": 0.74
+  },
+  {
+    "bpm": 128,
+    "beat": 0.4,
+    "energy": 0.81
+  },
+  {
+    "bpm": 128,
+    "beat": 0.61,
+    "energy": 0.88
+  },
+  {
+    "bpm": 128,
+    "beat": 0.79,
+    "energy": 0.93
+  },
+  {
+    "bpm": 128,
+    "beat": 0.92,
+    "energy": 0.97
+  },
+  {
+    "bpm": 128,
+    "beat": 0.99,
+    "energy": 0.99
+  },
+  {
+    "bpm": 128,
+    "beat": 1.0,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.94,
+    "energy": 1.0
+  },
+  {
+    "bpm": 128,
+    "beat": 0.83,
+    "energy": 0.98
+  },
+  {
+    "bpm": 128,
+    "beat": 0.67,
+    "energy": 0.94
+  },
+  {
+    "bpm": 128,
+    "beat": 0.46,
+    "energy": 0.9
+  },
+  {
+    "bpm": 128,
+    "beat": 0.23,
+    "energy": 0.84
+  },
+  {
+    "bpm": 128,
+    "beat": 0.02,
+    "energy": 0.77
+  },
+  {
+    "bpm": 128,
+    "beat": 0.26,
+    "energy": 0.68
+  },
+  {
+    "bpm": 128,
+    "beat": 0.49,
+    "energy": 0.59
+  },
+  {
+    "bpm": 128,
+    "beat": 0.69,
+    "energy": 0.49
+  }
+]

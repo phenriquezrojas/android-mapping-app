@@ -326,6 +326,24 @@ fun DashboardScreen(
                         },
                         onDismiss = { showShaderControls = null }
                     )
+                } else if (shaderId == "shader_nanoleaf_v4") {
+                    NanoleafV4ConfigDialog(
+                        clipName = clip.name,
+                        parameters = params,
+                        isNanoleafConnected = uiState.isNanoleafConnected,
+                        onParamChange = { name, value ->
+                            val newParams = params.toMutableMap()
+                            newParams[name] = value
+                            val newClip = clip.copy(shaderParameters = newParams)
+                            viewModel.updateClipInSlot(surfaceId, slotIndex, newClip)
+                            viewModel.updateShaderParameter(surfaceId, name, value)
+                        },
+                        onEditLayout = {
+                            showShaderControls = null
+                            showNanoleafEditor = Pair(surfaceId, slotIndex)
+                        },
+                        onDismiss = { showShaderControls = null }
+                    )
                 } else {
                     ShaderControlsDialog(
                         clipName = clip.name,

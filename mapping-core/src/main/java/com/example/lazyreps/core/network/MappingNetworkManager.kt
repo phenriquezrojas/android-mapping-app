@@ -130,6 +130,8 @@ class MappingNetworkManager(
         httpServer = null
     }
 
+    fun isServerRunning(): Boolean = httpServer?.isAlive == true || server != null
+
     private fun cleanupOldUploads(uploadDir: File) {
         try {
             val now = System.currentTimeMillis()
@@ -249,7 +251,7 @@ class MappingNetworkManager(
             val uri = session?.uri ?: ""
             // println("MappingHttpServer Request: ${session?.method} $uri")
 
-            // [Phase 5.8] Allow app-level override (e.g. for /live.mjpg)
+            // [Phase 5.8] Allow app-level override (e.g. for /live.mjpg and Nanoleaf POST /new)
             val customResponse = cb.onHttpRequest(session!!)
             if (customResponse != null) return customResponse
             

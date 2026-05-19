@@ -1,0 +1,64 @@
+* {
+    .viewport {
+        flex: 1;
+        position: relative;
+    }
+
+    canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+    }
+
+    section {
+        margin-bottom: 30px;
+    }
+
+    .card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, 1fr);
+        gap: 10px;
+    }
+
+    .card {
+        border: 1px solid #333;
+        background: #1a1a1a;
+        padding: 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: 0.2s;
+    }
+
+    .card:hover {
+        transform: scale(1.03);
+        border-color: #666;
+    }
+
+    .card.active {
+        border-color: white;
+    }
+
+    .preview {
+        height: 80px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        background: linear-gradient(135deg, #333, #111);
+    }
+
+    .hud {
+        position: absolute;
+        top: 20px;
+        right: 20px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px 14px;
+        border-radius: 10px;
+    }
+
+    button {
+        background: #222;
+        color: white;
+        border: none;
+        padding: 10px 14px;
+        border-radius: 8px;
+        cursor: pointer;
+    }

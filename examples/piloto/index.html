@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>AndesVibe Visual Composer</title>
+<link rel="stylesheet" href="styles.css" />
+</head>
+
+<body>
+
+    <div class="app">
+
+        <aside class="sidebar">
+
+            <h1>AndesVibe</h1>
+
+            <section>
+                <h2>Visual Identity</h2>
+                <div id="identity-list" class="card-grid"></div>
+            </section>
+
+            <section>
+                <h2>Scene</h2>
+                <div id="scene-list" class="card-grid"></div>
+            </section>
+
+            <section>
+                <h2>Layout</h2>
+                <div id="layout-list" class="card-grid"></div>
+            </section>
+
+            <section>
+                <h2>Movement</h2>
+                <div id="movement-list" class="card-grid"></div>
+            </section>
+
+            <section>
+                <h2>Playback</h2>
+                <button id="play-btn">Play</button>
+                <button id="pause-btn">Pause</button>
+            </section>
+
+        </aside>
+
+        <main class="viewport">
+
+            <canvas id="canvas"></canvas>
+
+            <div class="hud">
+                <div>BPM: <span id="bpm">128</span></div>
+                <div>Energy: <span id="energy">0</span></div>
+                <div>Scene: <span id="scene-name"></span></div>
+                <div>Layout: <span id="layout-name"></span></div>
+            </div>
+
+        </main>
+
+    </div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

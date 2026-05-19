@@ -28,254 +28,197 @@ class NanoleafManager @Inject constructor(
 ) {
     private val TAG = "NanoleafManager"
     
-    // Core state
     val colorBuffer = FloatArray(48) // 16 panels x 3 (RGB)
     
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    // Networking components
     private var udpSocket: DatagramSocket? = null
     private var udpJob: Job? = null
-    private val scope = CoroutineScope(Dispatchers.IO)
     private var nsdManager: NsdManager? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
+    private var currentDeviceName: String = "NanoLeafMapping"
 
-    init {
+    // [v4.1] Layout Sync
+    var activeLayoutType: LayoutType = LayoutType.GRID
+    var activePanelCount: Int = 16
+
+    fun start(deviceName: String) {
+        currentDeviceName = "NanoLeafMapping-$deviceName"
         startUdpListener()
-        registerMdnsService()
+        registerMdnsService(deviceName)
     }
 
-    private fun registerMdnsService() {
+    private fun registerMdnsService(modelName: String) {
         nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
-
         val serviceInfo = NsdServiceInfo().apply {
-            serviceName = "NanoleafLab"
+            serviceName = currentDeviceName
             serviceType = "_nanoleafapi._tcp"
             port = 8081
-            setAttribute("id", "deadbeef0001")
-            setAttribute("nm", "NanoleafLab")
-            setAttribute("md", "NL42") // Critical for Numark rhythmic support
+            setAttribute("id", "LAB-SERIAL-0001") 
+            setAttribute("nm", currentDeviceName)
+            setAttribute("md", "NL42") 
         }
 
         registrationListener = object : NsdManager.RegistrationListener {
-            override fun onServiceRegistered(NsdServiceInfo: NsdServiceInfo) {
-                Log.d(TAG, "mDNS Service registered: ${NsdServiceInfo.serviceName}")
-            }
-
-            override fun onRegistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "mDNS Registration failed: $errorCode")
-            }
-
-            override fun onServiceUnregistered(arg0: NsdServiceInfo) {
-                Log.d(TAG, "mDNS Service unregistered")
-            }
-
-            override fun onUnregistrationFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "mDNS Unregistration failed: $errorCode")
-            }
+            override fun onServiceRegistered(info: NsdServiceInfo) { Log.d(TAG, "mDNS Registered") }
+            override fun onRegistrationFailed(info: NsdServiceInfo, error: Int) { Log.e(TAG, "mDNS Fail: $error") }
+            override fun onServiceUnregistered(info: NsdServiceInfo) {}
+            override fun onUnregistrationFailed(info: NsdServiceInfo, error: Int) {}
         }
-
-        try {
-            nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to register mDNS service: ${e.message}")
-        }
+        nsdManager?.registerService(serviceInfo, NsdManager.PROTOCOL_DNS_SD, registrationListener)
     }
 
     private fun startUdpListener() {
         udpJob?.cancel()
-        udpJob = scope.launch {
+        udpJob = CoroutineScope(Dispatchers.IO).launch {
             try {
                 udpSocket = DatagramSocket(null).apply {
                     reuseAddress = true
                     bind(InetSocketAddress(60222))
                 }
-                
-                val receiveData = ByteArray(1024)
-                
-                Log.d(TAG, "UDP Listener started on port 60222")
-                
+                val buffer = ByteArray(2048)
                 while (isActive) {
-                    val packet = DatagramPacket(receiveData, receiveData.size)
+                    val packet = DatagramPacket(buffer, buffer.size)
                     udpSocket?.receive(packet)
                     _isConnected.value = true
+                    
+                    // RESTORED DEBUG: Force Panel 0 White
+                    colorBuffer[0] = 255f
+                    colorBuffer[1] = 255f
+                    colorBuffer[2] = 255f
+                    
                     parseUdpPacket(packet.data, packet.length)
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "UDP Listener error: ${e.message}")
-                _isConnected.value = false
+                Log.e(TAG, "UDP Error", e)
             } finally {
                 udpSocket?.close()
-                udpSocket = null
             }
         }
     }
 
     private fun parseUdpPacket(data: ByteArray, length: Int) {
+        // Numark/Engine OS sends 2 bytes for panel count (e.g., 00 10 for 16 panels)
         if (length < 2) return
         
-        // Numark sends number of panels in the first 2 bytes (Big Endian)
-        val panelCount = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
+        val numPanelsInPacket = ((data[0].toInt() and 0xFF) shl 8) or (data[1].toInt() and 0xFF)
         
+        // Data starts at offset 2
         var offset = 2
-        for (i in 0 until panelCount) {
+        for (i in 0 until numPanelsInPacket) {
             if (offset + 8 > length) break
             
-            // val panelId = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset+1].toInt() and 0xFF)
-            // For now, we assume Numark sends panel IDs sequentially or we just map them 0-15 based on index
-            // since our shader supports up to 16 panels directly.
-            // If panel IDs are not sequential (e.g. 100, 101), we map the first 16 we receive.
-            if (i < 16) {
-                val r = data[offset + 2].toInt() and 0xFF
-                val g = data[offset + 3].toInt() and 0xFF
-                val b = data[offset + 4].toInt() and 0xFF
-                
-                colorBuffer[i * 3] = r.toFloat()
-                colorBuffer[i * 3 + 1] = g.toFloat()
-                colorBuffer[i * 3 + 2] = b.toFloat()
+            val panelId = ((data[offset].toInt() and 0xFF) shl 8) or (data[offset + 1].toInt() and 0xFF)
+            val targetIndex = panelId - 1
+            
+            if (targetIndex in 0..15) {
+                colorBuffer[targetIndex * 3] = (data[offset + 2].toInt() and 0xFF).toFloat()
+                colorBuffer[targetIndex * 3 + 1] = (data[offset + 3].toInt() and 0xFF).toFloat()
+                colorBuffer[targetIndex * 3 + 2] = (data[offset + 4].toInt() and 0xFF).toFloat()
             }
             offset += 8
         }
     }
 
-    fun generateAutonomousColors(beatPhase: Float, time: Float) {
-        // Fallback procedural colors when Numark is not connected
-        for (i in 0 until 16) {
-            val hue = (time * 0.1f + i.toFloat() / 16f) % 1f
-            val pulse = (1f - beatPhase) * 0.5f + 0.5f
-            
-            // HSV to RGB simple conversion
-            val h = hue * 6.0f
-            val f = h - h.toInt()
-            val p = 0.0f
-            val q = 1.0f - f
-            val t = f
-            
-            var r = 0f
-            var g = 0f
-            var b = 0f
-            
-            when (h.toInt() % 6) {
-                0 -> { r = 1f; g = t; b = p }
-                1 -> { r = q; g = 1f; b = p }
-                2 -> { r = p; g = 1f; b = t }
-                3 -> { r = p; g = q; b = 1f }
-                4 -> { r = t; g = p; b = 1f }
-                5 -> { r = 1f; g = p; b = q }
-            }
-            
-            colorBuffer[i * 3] = r * pulse * 255f
-            colorBuffer[i * 3 + 1] = g * pulse * 255f
-            colorBuffer[i * 3 + 2] = b * pulse * 255f
-        }
-    }
-
-    // HTTP Handler for NanoHTTPD interception
     fun handleHttpRequest(session: NanoHTTPD.IHTTPSession): NanoHTTPD.Response? {
         val uri = session.uri
-        val method = session.method
-        
         if (!uri.startsWith("/api/v1/")) return null
         
-        Log.d(TAG, "Nanoleaf API call: $method $uri")
-        
+        // Authentication / Pairing (Engine OS uses /new)
         if (uri.endsWith("/new") || uri.endsWith("/auth")) {
+            Log.i(TAG, "Pairing request detected on $uri")
             return NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json",
+                NanoHTTPD.Response.Status.OK, 
+                "application/json", 
                 "{\"auth_token\": \"lab-token-nanoleaf-001\"}"
             )
         }
         
-        // Main state endpoint
-        if (uri.matches(Regex("/api/v1/[^/]+/?"))) {
-            if (method == NanoHTTPD.Method.GET) {
-                val response = JSONObject().apply {
-                    put("name", "NanoleafLab")
-                    put("serialNo", "deadbeef0001")
-                    put("manufacturer", "Nanoleaf")
-                    put("firmwareVersion", "9.1.0")
-                    put("model", "NL42")
-                    put("effects", JSONObject().put("select", "*Dynamic*"))
-                    put("state", JSONObject()
-                        .put("on", JSONObject().put("value", true))
-                        .put("brightness", JSONObject().put("value", 100).put("max", 100).put("min", 0))
-                    )
-                    put("panelLayout", JSONObject().put("layout", JSONObject()
-                        .put("numPanels", 16)
-                        .put("sideLength", 150)
-                    ))
-                }
+        // --- Helper for consistent layout generation ---
+        val generateLayout = {
+            val positionDataArr = JSONArray()
+            val spatialModel = SpatialGraphModel()
+            // We use the properties updated by MappingViewModel
+            val positions = spatialModel.generateLayout(activeLayoutType, activePanelCount)
+            
+            for (i in positions.indices) {
+                val pos = positions[i]
+                // Convert normalized visual coordinates to Numark coordinate space (approx 150 units per panel side)
+                positionDataArr.put(JSONObject()
+                    .put("panelId", i + 1)
+                    .put("x", (pos.x * 300f).toInt())
+                    .put("y", (pos.y * 300f).toInt())
+                    .put("o", 0)
+                )
+            }
+            JSONObject()
+                .put("numPanels", activePanelCount)
+                .put("sideLength", 150)
+                .put("positionData", positionDataArr)
+        }
+        
+        // External Control Mode Enable / Effects
+        if (uri.contains("/effects")) {
+            if (session.method == NanoHTTPD.Method.PUT) {
                 return NanoHTTPD.newFixedLengthResponse(
                     NanoHTTPD.Response.Status.OK,
                     "application/json",
-                    response.toString()
+                    "{\"select\": \"*extControl*\"}"
+                )
+            } else {
+                return NanoHTTPD.newFixedLengthResponse(
+                    NanoHTTPD.Response.Status.OK,
+                    "application/json",
+                    "{\"select\":\"*extControl*\",\"effectsList\":[\"*extControl*\", \"*Dynamic*\"]}"
                 )
             }
         }
         
-        // Panel Layout endpoint
+        // Detailed Layout Endpoint
         if (uri.contains("/panelLayout/layout")) {
-            val positionData = JSONArray()
-            // Generate a simple grid layout for the Numark to know what it's dealing with
-            for (i in 0 until 16) {
-                val col = i % 4
-                val row = i / 4
-                positionData.put(JSONObject()
-                    .put("panelId", i + 1)
-                    .put("x", col * 150)
-                    .put("y", row * 150)
-                    .put("o", 0)
-                )
-            }
-            
+            return NanoHTTPD.newFixedLengthResponse(
+                NanoHTTPD.Response.Status.OK,
+                "application/json",
+                generateLayout().toString()
+            )
+        }
+
+        // Master State (Must include positionData for Numark to work)
+        if (uri.matches(Regex("/api/v1/[^/]+/?"))) {
             val response = JSONObject()
-                .put("numPanels", 16)
-                .put("sideLength", 150)
-                .put("positionData", positionData)
-                
+            response.put("name", currentDeviceName)
+            response.put("serialNo", "LAB-SERIAL-0001")
+            response.put("manufacturer", "Nanoleaf")
+            response.put("model", "NL42")
+            response.put("firmwareVersion", "3.5.0")
+            
+            response.put("on", JSONObject().put("value", true))
+            response.put("brightness", JSONObject().put("value", 50))
+            
+            val effects = JSONObject()
+            effects.put("select", "*Dynamic*")
+            effects.put("effectsList", JSONArray().put("*Dynamic*").put("*extControl*"))
+            response.put("effects", effects)
+            
+            val panelLayout = JSONObject()
+            panelLayout.put("globalOrientation", JSONObject().put("value", 0))
+            panelLayout.put("layout", generateLayout())
+            response.put("panelLayout", panelLayout)
+            
             return NanoHTTPD.newFixedLengthResponse(
                 NanoHTTPD.Response.Status.OK,
                 "application/json",
                 response.toString()
             )
         }
-        
-        // Effects endpoint (Mock)
-        if (uri.contains("/effects")) {
-            return NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json",
-                "{\"select\":\"*Dynamic*\",\"effectsList\":[\"*Dynamic*\"]}"
-            )
-        }
 
-        // State endpoint (Mock)
-        if (uri.contains("/state")) {
-             return NanoHTTPD.newFixedLengthResponse(
-                NanoHTTPD.Response.Status.OK,
-                "application/json",
-                "{\"value\":true}"
-            )
-        }
-
-        return NanoHTTPD.newFixedLengthResponse(
-            NanoHTTPD.Response.Status.NOT_FOUND,
-            "application/json",
-            "{}"
-        )
+        return null
     }
 
     fun shutdown() {
         udpJob?.cancel()
         udpSocket?.close()
-        try {
-            registrationListener?.let {
-                nsdManager?.unregisterService(it)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error unregistering mDNS: ${e.message}")
-        }
+        _isConnected.value = false
     }
 }

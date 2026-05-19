@@ -410,7 +410,7 @@
   <div class="sidebar-logo">
     <div class="badge">🗺️ Mapping Android</div>
     <h1>Arquitectura del Sistema</h1>
-    <p>v2.4 · Análisis Completo</p>
+    <p>v2.5 · Análisis Completo</p>
   </div>
   <nav>
     <div class="section-label">Visión General</div>
@@ -430,6 +430,9 @@
     <a href="#viewmodel"><span class="icon">🧠</span> ViewModel</a>
     <a href="#ui"><span class="icon">🎨</span> Pantallas UI</a>
     <a href="#flujo"><span class="icon">🔄</span> Flujo de Datos</a>
+
+    <div class="section-label">Integración</div>
+    <a href="#nanoleaf"><span class="icon">💡</span> Nanoleaf Emulator</a>
 
     <div class="section-label">Persistencia</div>
     <a href="#persistencia"><span class="icon">💾</span> Crash Recovery</a>
@@ -453,7 +456,7 @@
     <!-- Hero -->
     <div class="hero">
       <h1>Arquitectura Completa — MappingAndroid</h1>
-      <p>Aplicación Android de video-mapping en tiempo real con soporte multi-dispositivo (Servidor/Cliente), renderizado OpenGL ES 2.0 y sincronización de estado por WebSocket.</p>
+      <p>Aplicación Android de video-mapping en tiempo real con soporte multi-dispositivo (Servidor/Cliente), renderizado OpenGL ES 2.0, sincronización de estado por WebSocket y emulador Nanoleaf para integración con controladores DJ.</p>
       <div class="hero-tags">
         <span class="tag">Jetpack Compose</span>
         <span class="tag">ExoPlayer / Media3</span>
@@ -462,7 +465,9 @@
         <span class="tag">NanoHTTPD</span>
         <span class="tag">UDP Discovery</span>
         <span class="tag">Hilt DI</span>
-        <span class="tag">25+ GLSL Shaders</span>
+        <span class="tag">27+ GLSL Shaders</span>
+        <span class="tag">Nanoleaf Emulator</span>
+        <span class="tag">CameraX → MJPEG</span>
         <span class="tag">Undo/Redo (50 steps)</span>
         <span class="tag">Crash Recovery</span>
       </div>
@@ -521,7 +526,15 @@ flowchart TB
         EXO["ExoPlayer\n(Video Playback)"]
         MJPEG["MjpegStreamController\n(IP Camera streaming)"]
         VC["VideoController\n(Lifecycle wrapper)"]
-        CAM["CameraStreamManager\n(Local Camera → MJPEG)"]
+        CAM["CameraStreamManager\n(CameraX → MJPEG /live.mjpg)"]
+    end
+
+    subgraph NANO["💡 Nanoleaf Emulator"]
+        NLM["NanoleafManager\n(@Singleton · Hilt)"]
+        NL_UDP["UDP Listener\n:60222\nNumark Color Data"]
+        NL_MDNS["mDNS Registration\n_nanoleafapi._tcp"]
+        NL_API["HTTP API Emulation\n/api/v1/* via :8081"]
+        NL_SHADER["shader_nanoleaf_v2\n16-panel color grid"]
     end
 
     subgraph NET["🌐 Red"]
@@ -556,7 +569,9 @@ flowchart TB
     VM --> MEDIA
     VM --> NET
     VM --> PERSIST
+    VM --> NANO
     GFX --> DOMAIN
+    NANO --> GFX
     NET --> DOMAIN
     APP_ENTRY --> VM
         </div>
@@ -812,16 +827,17 @@ flowchart TB
     ODF --> FRAME
     F5 --> MULTILAYER
 
-    subgraph SHADERS25["🎨 Shader Presets 25+"]
-        SH1["MagicRoots · FireEnergy · LeafStorm"]
-        SH2["PlasmaWaves · VoronoiCells · FractalZoom"]
-        SH3["LiquidMetal · NeonGrid · StarField"]
-        SH4["Kaleidoscope · WaterRipples · AuroraFlow"]
-        SH5["GeometricPulse · WatcherEyes · MysticLiquid"]
-        SH6["neon_bounce · Arcoiris · BPM_Debug"]
+    subgraph SHADERS27["🎨 Shader Presets 27+"]
+        SH1["FireEnergy · GraffitiMask · AncientPine"]
+        SH2["CosmicPollen · FriendshipAura · WatcherEyes"]
+        SH3["SacredGeometry · FlowerOfLife · Kaleidoscopio"]
+        SH4["ElectricField · DiscoBall · PurpleFlower"]
+        SH5["MoonHalo · FlagStone · AsciiTunnel"]
+        SH6["Arcoiris · BPM_Debug · NeonText"]
+        SH7["NanoleafV2 · OrganicNoise · AuraField · ColorWash"]
     end
 
-    P5 --- SHADERS25
+    P5 --- SHADERS27
         </div>
       </div>
     </section>
@@ -934,6 +950,7 @@ flowchart TD
             M5["Remote Config Dialog\nWS + UDP auto-discovery\nManual IP tab"]
             M6["Remote File Browser\nFile list Thumbnails"]
             M7["Deck / Clip Grid\nVJ Pad interface"]
+            M9["Nanoleaf Editor\nPanel layout · Colors"]
             M8["Edit / Show mode toggle"]
         end
 
@@ -1028,6 +1045,46 @@ flowchart LR
     </section>
     <hr class="divider" />
 
+    <!-- 11b. Nanoleaf -->
+    <section id="nanoleaf">
+      <h2><span class="num">11b</span> Nanoleaf Emulator — Integración DJ</h2>
+      <p class="section-desc">Sistema de emulación Nanoleaf que permite a controladores DJ (Numark/Engine OS) enviar datos de color via UDP. El emulador registra un servicio mDNS, expone un HTTP API compatible, y alimenta un shader GLSL con los 16 colores de paneles en tiempo real.</p>
+      <div class="diagram-card">
+        <div class="diagram-card-header">
+          <div class="dot" style="background:#a78bfa"></div>
+          <span>NANOLEAF EMULATOR PIPELINE</span>
+        </div>
+        <div class="mermaid">
+flowchart LR
+    subgraph DJ["🎧 Numark / Engine OS"]
+        DISC["mDNS Discovery\n_nanoleafapi._tcp"]
+        PAIR["HTTP Pairing\nPOST /api/v1/.../new"]
+        CTRL["UDP Color Data\n:60222\n16 panels × RGB"]
+    end
+
+    subgraph EMU["💡 NanoleafManager"]
+        MDNS["mDNS Registration\nNanoLeafMapping-Model"]
+        API["HTTP API Emulation\n/api/v1/* via :8081"]
+        UDPL["UDP Listener\nPort 60222"]
+        BUF["colorBuffer\nFloatArray 48\n16 × RGB"]
+    end
+
+    subgraph RENDER["🖥️ Renderer"]
+        SHADER["shader_nanoleaf_v2\nu_NanoleafColors vec3 16"]
+        OUT["Projected Output\n4x4 panel grid"]
+    end
+
+    DISC --> MDNS
+    PAIR --> API
+    CTRL --> UDPL
+    UDPL --> BUF
+    BUF --> SHADER
+    SHADER --> OUT
+        </div>
+      </div>
+    </section>
+    <hr class="divider" />
+
     <!-- 12. Tecnologías -->
     <section id="tecnologias">
       <h2><span class="num">12</span> Resumen de Tecnologías</h2>
@@ -1052,8 +1109,11 @@ flowchart LR
           <tr><td>Serialización</td><td>org.json (sin reflection, manual)</td></tr>
           <tr><td>Concurrencia</td><td>Kotlin Coroutines · GL Thread · Main Thread</td></tr>
           <tr><td>DI</td><td>Hilt (@HiltAndroidApp · @AndroidEntryPoint)</td></tr>
-          <tr><td>Shaders</td><td>25+ GLSL procedurales con lazy loading</td></tr>
+          <tr><td>Shaders</td><td>27+ GLSL procedurales con lazy loading (1/sec max)</td></tr>
           <tr><td>Undo/Redo</td><td>Command Pattern con invert() — 50 steps</td></tr>
+          <tr><td>CameraX</td><td>Camera → MJPEG stream via /live.mjpg (640×360, JPEG Q60)</td></tr>
+          <tr><td>Nanoleaf</td><td>NanoleafManager: mDNS + HTTP API + UDP :60222 color receiver</td></tr>
+          <tr><td>Commands</td><td>30+ MappingCommand sealed subtypes con JSON serialización</td></tr>
         </tbody>
       </table>
     </section>

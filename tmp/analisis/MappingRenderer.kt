@@ -60,47 +60,6 @@ class MappingRenderer(
     // [v1.20] Nanoleaf Emulator colors (16 vec3 = 48 floats)
     var nanoleafColors: FloatArray = FloatArray(48)
 
-    // --- Nanoleaf v4 runtime performance caches (avoid per-frame allocations) ---
-    private val nanoleafSpatialModel = com.example.lazyreps.nanoleaf.SpatialGraphModel()
-    private var cachedNanoleafLayoutId: Int = Int.MIN_VALUE
-    private var cachedNanoleafPanelCount: Int = Int.MIN_VALUE
-    private var cachedNanoleafGap: Float = Float.NaN
-    private var cachedNanoleafScaleFactor: Float = 1.0f
-    // Packed as [x0,y0,x1,y1,...] length = 32 for up to 16 panels
-    private val cachedNanoleafPositions = FloatArray(16 * 2) { 0f }
-
-    private fun updateNanoleafV4LayoutCache(panelCount: Int, layoutId: Int, gap: Float) {
-        val safePanelCount = panelCount.coerceIn(1, 16)
-
-        val cacheHit =
-            cachedNanoleafPanelCount == safePanelCount &&
-            cachedNanoleafLayoutId == layoutId &&
-            cachedNanoleafGap == gap
-
-        if (cacheHit) return
-
-        cachedNanoleafPanelCount = safePanelCount
-        cachedNanoleafLayoutId = layoutId
-        cachedNanoleafGap = gap
-        cachedNanoleafScaleFactor = gap / 0.05f
-
-        val layoutType = com.example.lazyreps.nanoleaf.LayoutType.values().find { it.id == layoutId }
-            ?: com.example.lazyreps.nanoleaf.LayoutType.GRID
-        val positions = nanoleafSpatialModel.generateLayout(layoutType, safePanelCount)
-
-        for (i in 0 until 16) {
-            val base = i * 2
-            if (i < positions.size) {
-                val pos = positions[i]
-                cachedNanoleafPositions[base] = pos.x
-                cachedNanoleafPositions[base + 1] = pos.y
-            } else {
-                cachedNanoleafPositions[base] = 0f
-                cachedNanoleafPositions[base + 1] = 0f
-            }
-        }
-    }
-
 
 
     private var program = 0
@@ -1070,18 +1029,18 @@ private fun ensureSurfaceTexture(id: String): SurfaceTexture? {
                     val layoutId = slot.shaderParameters["u_layout"]?.toInt() ?: 0
                     val gap = slot.shaderParameters["u_gap"] ?: 0.05f
                     
-                    // Cache layout/positions (no per-frame model/list rebuilds unless inputs changed)
-                    updateNanoleafV4LayoutCache(panelCount, layoutId, gap)
+                    val layoutType = com.example.lazyreps.nanoleaf.LayoutType.values().find { it.id == layoutId } 
+                        ?: com.example.lazyreps.nanoleaf.LayoutType.GRID
+                    val spatialModel = com.example.lazyreps.nanoleaf.SpatialGraphModel()
+                    val positions = spatialModel.generateLayout(layoutType, panelCount)
+                    
+                    val scaleFactor = gap / 0.05f
                     
                     for (i in 0 until 16) {
+                        val pos = if (i < positions.size) positions[i] else com.example.lazyreps.nanoleaf.NodePosition(0f, 0f)
                         val loc = getUniLoc(pId, "u_panelPos$i")
                         if (loc != -1) {
-                            val base = i * 2
-                            GLES20.glUniform2f(
-                                loc,
-                                cachedNanoleafPositions[base] * cachedNanoleafScaleFactor,
-                                cachedNanoleafPositions[base + 1] * cachedNanoleafScaleFactor
-                            )
+                            GLES20.glUniform2f(loc, pos.x * scaleFactor, pos.y * scaleFactor)
                         }
                     }
                 }

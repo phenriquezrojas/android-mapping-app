@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Nanoleaf GLSL Sandbox - Laptop Preview</title>
+    <style>
+        body {
+            margin: 0;
+            background: #0f0f13;
+            color: #e2e8f0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+        #sidebar {
+            width: 340px;
+            background: #181824;
+            border-right: 1px solid #2d2d3d;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
+            overflow-y: auto;
+            box-shadow: 4px 0 15px rgba(0,0,0,0.3);
+        }
+        #viewport-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            padding: 20px;
+        }
+        canvas {
+            background: #000;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            max-width: 90%;
+            max-height: 80vh;
+            aspect-ratio: 1;
+        }
+        h2 {
+            margin: 0 0 10px 0;
+            font-size: 1.3rem;
+            color: #6366f1;
+            border-bottom: 1px solid #2d2d3d;
+            padding-bottom: 8px;
+        }
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        label {
+            font-size: 0.85rem;
+            color: #94a3b8;
+            display: flex;
+            justify-content: space-between;
+        }
+        input[type="range"] {
+            width: 100%;
+            accent-color: #6366f1;
+        }
+        .color-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 8px;
+            transition: opacity 0.3s;
+        }
+        .color-grid.disabled {
+            opacity: 0.3;
+            pointer-events: none;
+        }
+        .color-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            font-size: 0.7rem;
+            color: #64748b;
+        }
+        input[type="color"] {
+            border: none;
+            width: 100%;
+            height: 35px;
+            border-radius: 6px;
+            cursor: pointer;
+            background: none;
+        }
+        #error-log {
+            background: #2a1b1b;
+            border: 1px solid #7f1d1d;
+            color: #fca5a5;
+            padding: 12px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 0.75rem;
+            white-space: pre-wrap;
+            display: none;
+            margin-top: auto;
+        }
+        .badge {
+            background: #1e1b4b;
+            color: #a5b4fc;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75rem;
+            font-weight: bold;
+            align-self: flex-start;
+        }
+        .switch-container {
+            background: #1f1f2e;
+            padding: 12px;
+            border-radius: 8px;
+            border: 1px solid #313147;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="sidebar">
+        <div>
+            <h2>GLSL Sandbox</h2>
+            <div class="badge">Offline Laptop Mode</div>
+        </div>
+
+        <!-- Simulation Switches -->
+        <div class="switch-container">
+            <h2>Rhythm & Flow</h2>
+            <label style="flex-direction: row; justify-content: flex-start; gap: 8px; cursor: pointer; color: #a5b4fc; font-weight: bold;">
+                <input type="checkbox" id="auto-rhythm" checked> ⚡️ Simulate Numark Show
+            </label>
+            <label style="flex-direction: row; justify-content: flex-start; gap: 8px; cursor: pointer;">
+                <input type="checkbox" id="auto-beat" checked> Auto Beat Pulse (120 BPM)
+            </label>
+        </div>
+
+        <!-- Global Uniforms -->
+        <div class="control-group">
+            <h2>Global Uniforms</h2>
+            
+            <label>u_opacity <span id="val-opacity">1.0</span></label>
+            <input type="range" id="uni-opacity" min="0" max="1" step="0.05" value="1.0">
+            
+            <label>u_panelCount <span id="val-panelCount">16.0</span></label>
+            <input type="range" id="uni-panelCount" min="0" max="16" step="1" value="16">
+            
+            <label>u_BeatPhase <span id="val-beat">0.0</span></label>
+            <input type="range" id="uni-beat" min="0" max="1" step="0.01" value="0.0">
+        </div>
+
+        <!-- Panel Color Pickers -->
+        <div class="control-group">
+            <h2>Manual Panel Colors</h2>
+            <div class="color-grid disabled" id="manual-colors">
+                <!-- 16 Color Pickers -->
+                <script>
+                    const defaultColors = [
+                        "#ff0000", "#00ff00", "#0000ff", "#ffff00",
+                        "#ff00ff", "#00ffff", "#ffffff", "#ff8800",
+                        "#8800ff", "#00ff88", "#ff0088", "#88ff00",
+                        "#0088ff", "#ff5555", "#55ff55", "#5555ff"
+                    ];
+                    for(let i=0; i<16; i++) {
+                        document.write(`
+                            <div class="color-item">
+                                <input type="color" id="picker-${i}" value="${defaultColors[i]}">
+                                <span>P${i+1}</span>
+                            </div>
+                        `);
+                    }
+                </script>
+            </div>
+        </div>
+
+        <!-- Shader Compilation Errors -->
+        <div id="error-log"></div>
+    </div>
+
+    <div id="viewport-container">
+        <canvas id="gl-canvas" width="600" height="600"></canvas>
+        <p style="color: #64748b; font-size: 0.85rem; margin-top: 15px;">
+            Leyendo dinámicamente: <code style="color: #a5b4fc;">app/src/main/res/raw/shader_nanoleaf_v2.glsl</code>
+        </p>
+    </div>
+
+    <script>
+        const canvas = document.getElementById("gl-canvas");
+        const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        
+        if (!gl) {
+            alert("WebGL no soportado en tu navegador.");
+        }
+
+        // Vertex Shader standard for screen pass
+        const vsSource = `
+            attribute vec2 a_position;
+            varying vec2 v_TexCoord;
+            void main() {
+                v_TexCoord = a_position * 0.5 + 0.5; // Normaliza a rango [0, 1]
+                gl_Position = vec4(a_position, 0.0, 1.0);
+            }
+        `;
+
+        // Local state
+        let program = null;
+        let lastShaderSource = "";
+
+        // Uniform values from UI
+        const uniforms = {
+            opacity: 1.0,
+            panelCount: 16.0,
+            beatPhase: 0.0
+        };
+
+        // Hex to normalized RGB vec3
+        function hexToRgb(hex) {
+            const r = parseInt(hex.slice(1, 3), 16) / 255.0;
+            const g = parseInt(hex.slice(3, 5), 16) / 255.0;
+            const b = parseInt(hex.slice(5, 7), 16) / 255.0;
+            return [r, g, b];
+        }
+
+        // Setup sliders listeners
+        document.getElementById("uni-opacity").addEventListener("input", (e) => {
+            uniforms.opacity = parseFloat(e.target.value);
+            document.getElementById("val-opacity").innerText = uniforms.opacity.toFixed(2);
+        });
+        document.getElementById("uni-panelCount").addEventListener("input", (e) => {
+            uniforms.panelCount = parseFloat(e.target.value);
+            document.getElementById("val-panelCount").innerText = uniforms.panelCount.toFixed(1);
+        });
+        document.getElementById("uni-beat").addEventListener("input", (e) => {
+            uniforms.beatPhase = parseFloat(e.target.value);
+            document.getElementById("val-beat").innerText = uniforms.beatPhase.toFixed(2);
+        });
+
+        // Toggle pickers based on simulation switch
+        document.getElementById("auto-rhythm").addEventListener("change", (e) => {
+            const grid = document.getElementById("manual-colors");
+            if (e.target.checked) {
+                grid.classList.add("disabled");
+            } else {
+                grid.classList.remove("disabled");
+            }
+        });
+
+        // Initialize quad geometry
+        const positionBuffer = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+            -1.0, -1.0,
+             1.0, -1.0,
+            -1.0,  1.0,
+            -1.0,  1.0,
+             1.0, -1.0,
+             1.0,  1.0,
+        ]), gl.STATIC_DRAW);
+
+        // Fetch and compile shader
+        async function updateShader() {
+            try {
+                // Fetch the actual .glsl file from the Android resources
+                const response = await fetch("../app/src/main/res/raw/shader_nanoleaf_v2.glsl");
+                if (!response.ok) throw new Error("No se pudo cargar el archivo shader.");
+                
+                const fsSource = await response.text();
+                
+                // Only compile if the source code changed
+                if (fsSource === lastShaderSource) return;
+                lastShaderSource = fsSource;
+
+                // Compilation
+                const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+                const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+
+                if (!vs || !fs) return;
+
+                const newProgram = gl.createProgram();
+                gl.attachShader(newProgram, vs);
+                gl.attachShader(newProgram, fs);
+                gl.linkProgram(newProgram);
+
+                if (!gl.getProgramParameter(newProgram, gl.LINK_STATUS)) {
+                    showError("Program Link Error: " + gl.getProgramInfoLog(newProgram));
+                    return;
+                }
+
+                program = newProgram;
+                hideError();
+                console.log("Shader compiled and linked successfully!");
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        function compileShader(type, source) {
+            const shader = gl.createShader(type);
+            gl.shaderSource(shader, source);
+            gl.compileShader(shader);
+            if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+                showError((type === gl.VERTEX_SHADER ? "Vertex Shader" : "Fragment Shader") + " Error:\n" + gl.getShaderInfoLog(shader));
+                gl.deleteShader(shader);
+                return null;
+            }
+            return shader;
+        }
+
+        function showError(msg) {
+            const log = document.getElementById("error-log");
+            log.innerText = msg;
+            log.style.display = "block";
+        }
+
+        function hideError() {
+            document.getElementById("error-log").style.display = "none";
+        }
+
+        // Main Render Loop
+        function render(time) {
+            const isAutoBeat = document.getElementById("auto-beat").checked;
+            const isAutoRhythm = document.getElementById("auto-rhythm").checked;
+
+            // Auto Beat simulator (120 BPM = 500ms cycle)
+            let beatCycle = uniforms.beatPhase;
+            if (isAutoBeat) {
+                beatCycle = (time % 500) / 500.0;
+                uniforms.beatPhase = beatCycle;
+                document.getElementById("uni-beat").value = beatCycle;
+                document.getElementById("val-beat").innerText = beatCycle.toFixed(2);
+            }
+
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.clear(gl.COLOR_BUFFER_BIT);
+
+            if (program) {
+                gl.useProgram(program);
+
+                // Quad attributes
+                const positionLoc = gl.getAttribLocation(program, "a_position");
+                gl.enableVertexAttribArray(positionLoc);
+                gl.bindBuffer(gl.ARRAY_BUFFER, positionBuffer);
+                gl.vertexAttribPointer(positionLoc, 2, gl.FLOAT, false, 0, 0);
+
+                // Global Uniforms mapping
+                gl.uniform1f(gl.getUniformLocation(program, "u_opacity"), uniforms.opacity);
+                gl.uniform1f(gl.getUniformLocation(program, "u_panelCount"), uniforms.panelCount);
+                gl.uniform1f(gl.getUniformLocation(program, "u_BeatPhase"), uniforms.beatPhase);
+
+                // Map 16 dynamic colors to uniforms
+                for (let i = 0; i < 16; i++) {
+                    let rgb;
+                    
+                    if (isAutoRhythm) {
+                        // Dynamic Rhythmic Formula (Simulating Live Numark Output)
+                        const col = i % 4;
+                        const row = Math.floor(i / 4);
+                        const kick = Math.exp(-beatCycle * 6.0);
+                        const wavePhase = (time % 4000) / 4000.0; // Wave loop every 4s
+                        
+                        // Base ambient (very soft blue)
+                        let r = 0.0;
+                        let g = 0.0;
+                        let b = 0.06;
+                        
+                        // 1. Kick Drum (Magenta flash in the 4 central squares)
+                        const isCenter = (i === 5 || i === 6 || i === 9 || i === 10);
+                        if (isCenter) {
+                            r += 1.0 * kick;
+                            b += 0.4 * kick;
+                        } else {
+                            r += 0.4 * kick;
+                            b += 0.2 * kick;
+                        }
+                        
+                        // 2. Melodic Traveling Wave (Green wave flowing from top-left)
+                        const dist = Math.sqrt(col*col + row*row);
+                        let waveVal = Math.sin(wavePhase * 2 * Math.PI - dist * 0.7);
+                        waveVal = Math.max(0.0, waveVal);
+                        
+                        g += 0.75 * waveVal * (1.0 - kick * 0.4);
+                        b += 0.3 * waveVal;
+                        
+                        rgb = [
+                            Math.min(1.0, Math.max(0.0, r)),
+                            Math.min(1.0, Math.max(0.0, g)),
+                            Math.min(1.0, Math.max(0.0, b))
+                        ];
+                    } else {
+                        // Manual Mode from Pickers
+                        const colorHex = document.getElementById(`picker-${i}`).value;
+                        rgb = hexToRgb(colorHex);
+                    }
+
+                    const loc = gl.getUniformLocation(program, `u_panelColor${i}`);
+                    if (loc) {
+                        gl.uniform3fv(loc, new Float32Array(rgb));
+                    }
+                }
+
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
+
+            requestAnimationFrame(render);
+        }
+
+        // Live Hot-Reload: checks for shader changes every 500ms
+        setInterval(updateShader, 500);
+
+        // Start
+        updateShader().then(() => {
+            requestAnimationFrame(render);
+        });
+    </script>
+</body>
+</html>

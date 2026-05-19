@@ -2133,12 +2133,51 @@ fun SurfaceContentDialog(
                                 // Parameters
                                 Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                                     surface.shaderId?.let { shaderId ->
-                                        shaderRegistry[shaderId]?.forEach { param ->
+                                        if (shaderId == "shader_nanoleaf_v4") {
+                                            // 1. Scene Selector
+                                            val sceneValue = surface.shaderParameters["u_scene"] ?: 0f
+                                            SegmentedSelector(
+                                                title = "Modo de Escena (u_scene)",
+                                                options = listOf("Direct Node", "Pulse Core", "Neon Grid"),
+                                                selectedIndex = sceneValue.toInt().coerceIn(0, 2),
+                                                onOptionSelected = { onParamChange("u_scene", it.toFloat(), true, null) }
+                                            )
+                                            // 2. Layout Selector
+                                            val layoutValue = surface.shaderParameters["u_layout"] ?: 0f
+                                            SegmentedSelector(
+                                                title = "Layout Físico (u_layout)",
+                                                options = listOf("Grid", "Diamond", "Wave", "Orbital"),
+                                                selectedIndex = layoutValue.toInt().coerceIn(0, 3),
+                                                onOptionSelected = { onParamChange("u_layout", it.toFloat(), true, null) }
+                                            )
+                                            // 3. Shape Selector
+                                            val shapeValue = surface.shaderParameters["u_shapeType"] ?: 0f
+                                            SegmentedSelector(
+                                                title = "Geometría (u_shapeType)",
+                                                options = listOf("Triángulo", "Hexágono", "Cuadrado", "Círculo"),
+                                                selectedIndex = shapeValue.toInt().coerceIn(0, 3),
+                                                onOptionSelected = { onParamChange("u_shapeType", it.toFloat(), true, null) }
+                                            )
+                                        }
+
+                                        val hiddenParams = listOf("u_scene", "u_sceneA", "u_sceneB", "u_transition", "u_layout", "u_shapeType")
+
+                                        shaderRegistry[shaderId]?.filter { !hiddenParams.contains(it) }?.forEach { param ->
                                             val value = surface.shaderParameters[param] ?: 0.5f
+                                            var vRange = 0f..1f
+                                            var vSteps = 0
+                                            
+                                            if (param == "u_panelCount") {
+                                                vRange = 1f..16f
+                                                vSteps = 15
+                                            } else if (param == "u_rotation") {
+                                                vRange = 0f..6.283f
+                                            }
+
                                             Column(modifier = Modifier.padding(vertical = 4.dp)) {
                                                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                                                     Text(param, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall)
-                                                    Text(String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
+                                                    Text(if (param == "u_panelCount") "${value.toInt()}" else String.format("%.2f", value), color = Color.Cyan, style = MaterialTheme.typography.labelSmall)
                                                 }
                                                 Slider(
                                                     value = value,
@@ -2154,6 +2193,8 @@ fun SurfaceContentDialog(
                                                         onParamChange(param, surface.shaderParameters[param] ?: value, true, initialParamInverse)
                                                         initialParamInverse = null
                                                     },
+                                                    valueRange = vRange,
+                                                    steps = vSteps,
                                                     modifier = Modifier.height(26.dp)
                                                 )
                                             }
@@ -2435,6 +2476,43 @@ fun ServerListItem(
                 }
             }
             Icon(Icons.Default.PlayArrow, contentDescription = null, tint = Color.Cyan.copy(alpha = 0.6f), modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+fun SegmentedSelector(
+    title: String,
+    options: List<String>,
+    selectedIndex: Int,
+    onOptionSelected: (Int) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Text(title, color = Color.White.copy(alpha = 0.6f), style = MaterialTheme.typography.labelSmall)
+        Spacer(Modifier.height(4.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth().height(40.dp).background(Color.White.copy(alpha = 0.05f), RoundedCornerShape(8.dp)),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            options.forEachIndexed { index, option ->
+                val isSelected = index == selectedIndex
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .background(if (isSelected) Color.Cyan.copy(alpha = 0.2f) else Color.Transparent, RoundedCornerShape(8.dp))
+                        .clickable { onOptionSelected(index) },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        option, 
+                        color = if (isSelected) Color.Cyan else Color.Gray, 
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        maxLines = 1
+                    )
+                }
+            }
         }
     }
 }
